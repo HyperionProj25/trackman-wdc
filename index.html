@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>TrackMan WDC</title>
+  <!-- Tableau’s WDC library -->
+  <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
+  <script>
+    // 1) Create your connector object
+    const myConnector = tableau.makeConnector();
+
+    // 2) Define your schema (columns) — adjust names/data types later
+    myConnector.getSchema = schemaCallback => {
+      const cols = [
+        { id: "pitch_speed", dataType: tableau.dataTypeEnum.float },
+        { id: "spin_rate",   dataType: tableau.dataTypeEnum.float }
+        // …add more fields here when you know what TrackMan returns
+      ];
+      schemaCallback([{ id: "TrackManData", columns: cols }]);
+    };
+
+    // 3) Fetch from TrackMan API — placeholder URL & token
+    myConnector.getData = (table, doneCallback) => {
+      fetch("https://api.trackmanrange.com/api/YOUR_ENDPOINT", {
+        headers: { "Authorization": "Bearer YOUR_TOKEN" }
+      })
+      .then(r => r.json())
+      .then(json => {
+        // transform json → rows array
+        const rows = json.map(item => ({
+          pitch_speed: item.speed,
+          spin_rate:   item.spin
+          // …map additional fields here
+        }));
+        table.appendRows(rows);
+        doneCallback();
+      });
+    };
+
+    // 4) Register it with Tableau
+    tableau.registerConnector(myConnector);
+  </script>
+</head>
+<body>
+  <h1>TrackMan Data Connector</h1>
+  <button onclick="tableau.connectionName='TrackMan API'; tableau.submit();">
+    Connect to TrackMan
+  </button>
+</body>
+</html>
