@@ -203,153 +203,178 @@
             });
     };
 
-// In index.html, REPLACE the ENTIRE fetchAllDataHistorically function with this:
-async function fetchAllDataHistorically(table, doneCallback) {
-    console.log("WDC: fetchAllDataHistorically called (v12.1 - shorter chunks).");
-    if (!tableau.password) {
-        tableau.abortWithError("WDC: Authentication token is missing for historical data fetch.");
-        return;
-    }
-
-    try {
-        let allRowsCollected = [];
-        let sessionsFoundOverall = 0;
-        let pitchesFoundOverall = 0;
-
-        // Define the historical period: Start searching backwards from this date.
-        // IMPORTANT: Adjust this date to the most recent date from which you want to start searching backward.
-        let currentChunkEndDate = new Date("2025-05-01T23:59:59Z"); // Example: End of Oct 2024. ADJUST AS NEEDED!
-
-        const numberOfChunks = 6; // Fetch 6 chunks of 14 days each (approx 3 months)
-                                  // You can adjust this number.
-        const daysPerChunk = 14;  // Using 14-day chunks to reduce chance of timeout
-
-        for (let i = 0; i < numberOfChunks; i++) {
-            let chunkEndDate = new Date(currentChunkEndDate); // End date for THIS chunk
-            let chunkStartDate = new Date(currentChunkEndDate);
-            chunkStartDate.setDate(currentChunkEndDate.getDate() - (daysPerChunk - 1)); // Calculate start date for this chunk
-
-            const utcDateTo = chunkEndDate.toISOString().split('.')[0] + "Z";
-            const utcDateFrom = chunkStartDate.toISOString().split('.')[0] + "Z";
-
-            console.log(`WDC: --- Fetching Historical Chunk ${i + 1}/${numberOfChunks} ---`);
-            console.log(`WDC: Date Range for Session Discovery: ${utcDateFrom} to ${utcDateTo}`);
-            tableau.reportProgress(`Chunk ${i+1}/${numberOfChunks}: Discovering sessions for ${utcDateFrom.substring(0,10)} to ${utcDateTo.substring(0,10)}`);
-
-            const sessionsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/discovery/game/sessions`);
-            let sessionsResponse;
-            try {
-                sessionsResponse = await fetch(sessionsUrl, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json-patch+json',
-                        'Accept': 'application/json',
-                        'Authorization': 'Bearer ' + tableau.password
-                    },
-                    body: JSON.stringify({ sessionType: 'All', utcDateFrom, utcDateTo })
-                });
-            } catch (fetchError) {
-                // This is where the "TypeError: Failed to fetch" would be caught if it's a network-level error
-                console.error(`WDC: Chunk ${i + 1} - Outer fetch to proxy for session discovery failed:`, fetchError.toString());
-                tableau.abortWithError(`Network error during session discovery (Chunk ${i+1}): ${fetchError.toString()}. Check Netlify logs.`);
-                return; // Stop processing
-            }
-            
-            console.log(`WDC: Chunk ${i + 1} - Sessions discovery proxy response status: ${sessionsResponse.status}`);
-            if (!sessionsResponse.ok) {
-                const errorText = await sessionsResponse.text();
-                console.warn(`WDC: Chunk ${i + 1} - Session discovery failed (API level). Status: ${sessionsResponse.status}, Body: ${errorText.substring(0, 200)}`);
-                // Prepare for the next older chunk by setting currentChunkEndDate for the next iteration
-                currentChunkEndDate.setDate(chunkStartDate.getDate() - 1);
-                continue; // Skip to the next chunk
-            }
-
-            const sessionsData = await sessionsResponse.json();
-            // The Netlify proxy function wraps the actual API response in a 'body' field.
-            // And that 'body' field might itself be a JSON string that needs parsing.
-            let actualSessions;
-            if (sessionsData && sessionsData.body) {
-                if (typeof sessionsData.body === 'string') {
-                    try {
-                        actualSessions = JSON.parse(sessionsData.body);
-                    } catch (e) {
-                        console.error(`WDC: Chunk ${i+1} - Failed to parse sessionsData.body string:`, e, sessionsData.body.substring(0,300));
-                        actualSessions = []; // Treat as no sessions if parse fails
-                    }
-                } else { // If sessionsData.body is already an object
-                    actualSessions = sessionsData.body;
+            // In index.html, REPLACE the ENTIRE fetchAllDataHistorically function with this:
+            async function fetchAllDataHistorically(table, doneCallback) {
+                console.log("WDC: fetchAllDataHistorically called (v12.2 - Single Day Test).");
+                if (!tableau.password) {
+                    tableau.abortWithError("WDC: Authentication token is missing for data fetch.");
+                    return;
                 }
-            } else { // Fallback if proxy structure changes or if it's a direct response (less likely)
-                actualSessions = sessionsData;
-            }
-
-
-            if (!actualSessions || !Array.isArray(actualSessions) || actualSessions.length === 0) {
-                console.log(`WDC: Chunk ${i + 1} - No sessions found in API response for ${utcDateFrom} to ${utcDateTo}.`);
-                currentChunkEndDate.setDate(chunkStartDate.getDate() - 1);
-                continue; 
-            }
             
-            sessionsFoundOverall += actualSessions.length;
-            console.log(`WDC: Chunk ${i + 1} - Found ${actualSessions.length} sessions.`);
-
-            const sessionsToProcessInThisChunk = actualSessions.slice(0, 2); // Still process first 2 found sessions per chunk for testing
-            
-            for (const session of sessionsToProcessInThisChunk) {
-                // ... (The rest of the loop for fetching Ball and Plays data, and mapping rows, remains the same as v12) ...
-                // Make sure this inner part is copied correctly from the v12 full code I gave before.
-                // For brevity, I'm not repeating the ~100 lines of Ball/Plays fetch and mapping here.
-                // It starts with: if (!session.sessionId) { ... }
-                // And ends before: // Prepare for the next older chunk
-                if (!session.sessionId) {
-                    console.warn("WDC: Session object missing sessionId:", session);
-                    continue;
-                }
-                tableau.reportProgress(`Chunk ${i+1}: Processing session ${session.sessionId.substring(0,8)}...`);
-
-                // 1. Fetch Ball Data
-                let actualPitchDataForSession = [];
-                const pitchDataUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/game/balls/${session.sessionId}`);
-                console.log(`WDC: Fetching ball data for session: ${session.sessionId}`);
                 try {
-                    const pitchResponse = await fetch(pitchDataUrl, {
-                        method: 'GET',
-                        headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }
-                    });
-                    if (pitchResponse.ok) {
-                        const pitchDataResult = await pitchResponse.json();
-                        actualPitchDataForSession = (pitchDataResult && typeof pitchDataResult.body === 'string' ? JSON.parse(pitchDataResult.body) : pitchDataResult.body) || pitchDataResult;
-                        if (!Array.isArray(actualPitchDataForSession)) actualPitchDataForSession = []; // Ensure it's an array
-                        console.log(`WDC: Fetched ${actualPitchDataForSession.length} ball entries for session ${session.sessionId}.`);
-                    } else {
-                        console.warn(`WDC: Ball data fetch failed for session ${session.sessionId}. Status: ${pitchResponse.status}`);
+                    let allRowsCollected = [];
+                    let sessionsFoundOverall = 0;
+                    let pitchesFoundOverall = 0;
+            
+                    // ======= !!! IMPORTANT: SET YOUR TARGET DATE HERE !!! =======
+                    // Your business partner should provide this date.
+                    // Format: "YYYY-MM-DD"
+                    const targetDateString = "2024-07-10"; // EXAMPLE DATE - REPLACE THIS!
+                    // ======= !!! END OF TARGET DATE SETTING !!! =======
+            
+                    const utcDateFrom = targetDateString + "T00:00:00Z";
+                    const utcDateTo = targetDateString + "T23:59:59Z";
+            
+                    console.log(`WDC: --- Fetching Data for Single Day ---`);
+                    console.log(`WDC: Date Range for Session Discovery: ${utcDateFrom} to ${utcDateTo}`);
+                    tableau.reportProgress(`Discovering sessions for ${targetDateString}`);
+            
+                    const sessionsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/discovery/game/sessions`);
+                    let sessionsResponse;
+                    try {
+                        sessionsResponse = await fetch(sessionsUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json-patch+json',
+                                'Accept': 'application/json',
+                                'Authorization': 'Bearer ' + tableau.password
+                            },
+                            body: JSON.stringify({ sessionType: 'All', utcDateFrom, utcDateTo })
+                        });
+                    } catch (fetchError) {
+                        console.error(`WDC: Outer fetch to proxy for session discovery failed:`, fetchError.toString());
+                        tableau.abortWithError(`Network error during session discovery for ${targetDateString}: ${fetchError.toString()}. Check Netlify logs.`);
+                        return; 
                     }
-                } catch (fetchError) {
-                    console.error(`WDC: Fetch for ball data failed for session ${session.sessionId}:`, fetchError.toString());
-                    // Optionally continue to next session or abort, for now, just log and continue
-                }
-
-
-                // 2. Fetch Plays Data
-                let actualPlaysDataForSession = [];
-                const playsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/game/plays/${session.sessionId}`);
-                console.log(`WDC: Fetching plays data for session: ${session.sessionId}`);
-                 try {
-                    const playsResponse = await fetch(playsUrl, {
-                        method: 'GET',
-                        headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }
-                    });
-                    if (playsResponse.ok) {
-                        const playsResult = await playsResponse.json();
-                        actualPlaysDataForSession = (playsResult && typeof playsResult.body === 'string' ? JSON.parse(playsResult.body) : playsResult.body) || playsResult;
-                        if (!Array.isArray(actualPlaysDataForSession)) actualPlaysDataForSession = []; // Ensure it's an array
-                        console.log(`WDC: Fetched ${actualPlaysDataForSession.length} plays for session ${session.sessionId}.`);
-                    } else {
-                        console.warn(`WDC: Plays data fetch failed for session ${session.sessionId}. Status: ${playsResponse.status}`);
+                    
+                    console.log(`WDC: Sessions discovery proxy response status: ${sessionsResponse.status}`);
+                    if (!sessionsResponse.ok) {
+                        const errorText = await sessionsResponse.text();
+                        console.warn(`WDC: Session discovery failed (API level) for ${targetDateString}. Status: ${sessionsResponse.status}, Body: ${errorText.substring(0, 200)}`);
+                        tableau.abortWithError(`Session discovery failed for ${targetDateString} (Status ${sessionsResponse.status}): ${errorText.substring(0,100)}`);
+                        return;
                     }
-                } catch (fetchError) {
-                    console.error(`WDC: Fetch for plays data failed for session ${session.sessionId}:`, fetchError.toString());
+            
+                    const sessionsData = await sessionsResponse.json();
+                    let actualSessions;
+                    if (sessionsData && sessionsData.body) {
+                        if (typeof sessionsData.body === 'string') {
+                            try { actualSessions = JSON.parse(sessionsData.body); }
+                            catch (e) { console.error(`WDC: Failed to parse sessionsData.body string:`, e, sessionsData.body.substring(0,300)); actualSessions = []; }
+                        } else { actualSessions = sessionsData.body; }
+                    } else { actualSessions = sessionsData; }
+            
+                    if (!actualSessions || !Array.isArray(actualSessions) || actualSessions.length === 0) {
+                        console.log(`WDC: No sessions found in API response for ${targetDateString}.`);
+                        tableau.log(`No sessions found for ${targetDateString}.`);
+                        doneCallback();
+                        return; 
+                    }
+                    
+                    sessionsFoundOverall = actualSessions.length;
+                    console.log(`WDC: Found ${actualSessions.length} sessions for ${targetDateString}.`);
+            
+                    // Process a limited number of sessions found on that day for testing
+                    const sessionsToProcess = actualSessions.slice(0, 5); // Process up to the first 5 sessions found
+                    
+                    for (const session of sessionsToProcess) {
+                        if (!session.sessionId) {
+                            console.warn("WDC: Session object missing sessionId:", session);
+                            continue;
+                        }
+                        tableau.reportProgress(`Processing session ${session.sessionId.substring(0,8)}... for date ${targetDateString}`);
+            
+                        // 1. Fetch Ball Data
+                        let actualPitchDataForSession = [];
+                        const pitchDataUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/game/balls/${session.sessionId}`);
+                        console.log(`WDC: Fetching ball data for session: ${session.sessionId}`);
+                        try {
+                            const pitchResponse = await fetch(pitchDataUrl, {
+                                method: 'GET',
+                                headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }
+                            });
+                            if (pitchResponse.ok) {
+                                const pitchDataResult = await pitchResponse.json();
+                                actualPitchDataForSession = (pitchDataResult && typeof pitchDataResult.body === 'string' ? JSON.parse(pitchDataResult.body) : pitchDataResult.body) || pitchDataResult;
+                                if (!Array.isArray(actualPitchDataForSession)) actualPitchDataForSession = [];
+                                console.log(`WDC: Fetched ${actualPitchDataForSession.length} ball entries for session ${session.sessionId}.`);
+                            } else {
+                                console.warn(`WDC: Ball data fetch failed for session ${session.sessionId}. Status: ${pitchResponse.status}`);
+                            }
+                        } catch (fetchError) {
+                            console.error(`WDC: Fetch for ball data failed for session ${session.sessionId}:`, fetchError.toString());
+                        }
+            
+                        // 2. Fetch Plays Data
+                        let actualPlaysDataForSession = [];
+                        const playsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/game/plays/${session.sessionId}`);
+                        console.log(`WDC: Fetching plays data for session: ${session.sessionId}`);
+                         try {
+                            const playsResponse = await fetch(playsUrl, {
+                                method: 'GET',
+                                headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }
+                            });
+                            if (playsResponse.ok) {
+                                const playsResult = await playsResponse.json();
+                                actualPlaysDataForSession = (playsResult && typeof playsResult.body === 'string' ? JSON.parse(playsResult.body) : playsResult.body) || playsResult;
+                                if (!Array.isArray(actualPlaysDataForSession)) actualPlaysDataForSession = [];
+                                console.log(`WDC: Fetched ${actualPlaysDataForSession.length} plays for session ${session.sessionId}.`);
+                            } else {
+                                console.warn(`WDC: Plays data fetch failed for session ${session.sessionId}. Status: ${playsResponse.status}`);
+                            }
+                        } catch (fetchError) {
+                            console.error(`WDC: Fetch for plays data failed for session ${session.sessionId}:`, fetchError.toString());
+                        }
+            
+                        // 3. Map and Combine
+                        if (actualPitchDataForSession && actualPitchDataForSession.length > 0) {
+                            const mappedRows = actualPitchDataForSession.filter(item => item.kind === 'Pitch').map(item => {
+                                const playInfo = actualPlaysDataForSession.find(p => p.playID === item.playId);
+                                pitchesFoundOverall++;
+                                return { // Map to schema columns
+                                    sessionId: session.sessionId, playId: item.playId, trackId: item.trackId, trackStartTime: item.trackStartTime,
+                                    kind: item.kind, relSpeed: item.pitch?.release?.relSpeed, spinRate: item.pitch?.release?.spinRate,
+                                    extension: item.pitch?.release?.extension, vertRelAngle: item.pitch?.release?.vertRelAngle,
+                                    horzRelAngle: item.pitch?.release?.horzRelAngle, relHeight: item.pitch?.release?.relHeight,
+                                    relSide: item.pitch?.release?.relSide, horzBreak: item.pitch?.movement?.horzBreak,
+                                    vertBreak: item.pitch?.movement?.vertBreak, inducedVertBreak: item.pitch?.movement?.inducedVertBreak,
+                                    spinAxis: item.pitch?.movement?.spinAxis, tilt: item.pitch?.movement?.tilt,
+                                    zoneTime: item.pitch?.location?.zoneTime, plateLocHeight: item.pitch?.location?.plateLocHeight,
+                                    plateLocSide: item.pitch?.location?.plateLocSide, zoneSpeed: item.pitch?.location?.zoneSpeed,
+                                    vertApprAngle: item.pitch?.location?.vertApprAngle, horzApprAngle: item.pitch?.location?.horzApprAngle,
+                                    pfxx: item.pitch?.pfxData?.pfxx, pfxz: item.pitch?.pfxData?.pfxz, effVelocity: item.pitch?.pfxData?.effVelocity,
+                                    pitcherName: playInfo?.pitcher?.name, batterName: playInfo?.batter?.name,
+                                    pitchNo: playInfo?.taggerBehavior?.pitchNo || item.taggerPitch?.pitchNo,
+                                    inning: playInfo?.gameState?.inning || item.gameState?.inning,
+                                    balls: playInfo?.gameState?.balls !== undefined ? playInfo.gameState.balls : item.gameState?.balls,
+                                    strikes: playInfo?.gameState?.strikes !== undefined ? playInfo.gameState.strikes : item.gameState?.strikes,
+                                    outs: playInfo?.gameState?.outs !== undefined ? playInfo.gameState.outs : item.gameState?.outs,
+                                    taggedPitchType: playInfo?.pitchTag?.taggedPitchType || item.pitchTag?.taggedPitchType,
+                                    pitchCall: playInfo?.pitchTag?.pitchCall || item.pitchTag?.pitchCall
+                                };
+                            });
+                            allRowsCollected = allRowsCollected.concat(mappedRows);
+                        }
+                    } // End loop through sessions found on the target date
+            
+                    if (allRowsCollected.length > 0) {
+                        console.log(`WDC: Appending ${allRowsCollected.length} total rows for ${targetDateString} to Tableau table.`);
+                        table.appendRows(allRowsCollected);
+                    } else {
+                        console.log(`WDC: No processable pitch data rows to append for ${targetDateString}.`);
+                        if (sessionsFoundOverall > 0) {
+                            tableau.log(`Found ${sessionsFoundOverall} sessions for ${targetDateString}, but no pitch data could be retrieved/mapped from them, or no pitches in those sessions.`);
+                        } else {
+                            tableau.log(`No sessions were found for ${targetDateString}.`); // This message is already logged above if no sessions
+                        }
+                    }
+                    doneCallback();
+            
+                } catch (error) {
+                    console.error("WDC: Error in fetchAllDataHistorically (Single Day Test):", error.toString(), error.stack);
+                    tableau.abortWithError("Failed during single day data fetch: " + error.toString());
                 }
+            }
 
                 // 3. Map and Combine
                 if (actualPitchDataForSession && actualPitchDataForSession.length > 0) {
