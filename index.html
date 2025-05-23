@@ -2,27 +2,26 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector v4</title>
+  <title>TrackMan Tableau Web Data Connector v5</title>
   <!-- Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
-    // ======= CONFIGURATION: Your TrackMan API credentials =======
+    // ======= CONFIGURATION =======
     const clientId     = 'SheldonMcClelland-baseline';
     const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
-    // Use the 'release' host for up-to-date CORS support per Quick Start v2.6
-    const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
+    const apiHost      = 'https://release-dataapi.trackmanbaseball.com';
+    const apiBase      = apiHost + '/api/v1';
+    // If TrackMan API does not allow CORS, set up and use your own CORS proxy:
+    // e.g. const proxyUrl = 'https://your-proxy.com/';
+    const proxyUrl     = '';
 
-    // Tell Tableau we’re doing custom OAuth
+    // Custom OAuth for Tableau
     tableau.authType = tableau.authTypeEnum.custom;
 
-    // ======= INTERNAL STATE =======
     let oauthToken = null;
     let tokenExpiry = 0;
 
-    /**
-     * Obtain OAuth2 token (client_credentials grant) fileciteturn4file1
-     */
     async function fetchToken() {
       const params = new URLSearchParams();
       params.append('client_id', clientId);
@@ -40,26 +39,23 @@
       tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
     }
 
-    /** Ensure valid token **/
     async function ensureToken() {
-      if (!oauthToken || Date.now() >= tokenExpiry) await fetchToken();
+      if (!oauthToken || Date.now() >= tokenExpiry) {
+        await fetchToken();
+      }
     }
 
     const myConnector = tableau.makeConnector();
 
-    myConnector.init = initCallback => {
-      initCallback();
-    };
+    myConnector.init = initCallback => initCallback();
 
     myConnector.getSchema = schemaCallback => {
       const cols = [
-        // --- identifiers ---
         { id: 'sessionId',      dataType: tableau.dataTypeEnum.string },
         { id: 'playId',         dataType: tableau.dataTypeEnum.string },
         { id: 'trackId',        dataType: tableau.dataTypeEnum.string },
         { id: 'trackStartTime', dataType: tableau.dataTypeEnum.datetime },
         { id: 'kind',           dataType: tableau.dataTypeEnum.string },
-        // --- release metrics ---
         { id: 'relSpeed',       dataType: tableau.dataTypeEnum.float },
         { id: 'spinRate',       dataType: tableau.dataTypeEnum.float },
         { id: 'extension',      dataType: tableau.dataTypeEnum.float },
@@ -67,24 +63,20 @@
         { id: 'horzRelAngle',   dataType: tableau.dataTypeEnum.float },
         { id: 'relHeight',      dataType: tableau.dataTypeEnum.float },
         { id: 'relSide',        dataType: tableau.dataTypeEnum.float },
-        // --- movement ---
         { id: 'horzBreak',      dataType: tableau.dataTypeEnum.float },
         { id: 'vertBreak',      dataType: tableau.dataTypeEnum.float },
         { id: 'inducedVertBreak', dataType: tableau.dataTypeEnum.float },
         { id: 'spinAxis',       dataType: tableau.dataTypeEnum.float },
         { id: 'tilt',           dataType: tableau.dataTypeEnum.string },
-        // --- location & approach ---
         { id: 'zoneTime',       dataType: tableau.dataTypeEnum.float },
         { id: 'plateLocHeight', dataType: tableau.dataTypeEnum.float },
         { id: 'plateLocSide',   dataType: tableau.dataTypeEnum.float },
         { id: 'zoneSpeed',      dataType: tableau.dataTypeEnum.float },
         { id: 'vertApprAngle',  dataType: tableau.dataTypeEnum.float },
         { id: 'horzApprAngle',  dataType: tableau.dataTypeEnum.float },
-        // --- derived ---
         { id: 'pfxx',           dataType: tableau.dataTypeEnum.float },
         { id: 'pfxz',           dataType: tableau.dataTypeEnum.float },
         { id: 'effVelocity',    dataType: tableau.dataTypeEnum.float },
-        // --- context ---
         { id: 'pitchNo',        dataType: tableau.dataTypeEnum.int },
         { id: 'inning',         dataType: tableau.dataTypeEnum.int },
         { id: 'balls',          dataType: tableau.dataTypeEnum.int },
@@ -93,44 +85,45 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls_v4', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v5', columns: cols }]);
     };
 
     myConnector.getData = async (table, doneCallback) => {
       try {
         await ensureToken();
-
-        // discover sessions (requires accept header) fileciteturn4file0
-        const discResp = await fetch(
-          `${apiBase}/discovery/game/sessions`,
-          {
-            method:  'POST',
-            headers: {
-              'Content-Type':  'application/json-patch+json',
-              'Accept':        'text/plain',
-              'Authorization': 'Bearer ' + oauthToken
-            },
-            body: JSON.stringify({ sessionType: 'All', utcDateFrom: '2025-01-01T00:00:00Z', utcDateTo: '2025-12-31T23:59:59Z' })
-          }
-        );
-        if (!discResp.ok) throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
+        // Build URL with proxy if needed
+        const discUrl = (proxyUrl || '') + `${apiBase}/discovery/game/sessions`;
+        const discResp = await fetch(discUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type':  'application/json-patch+json',
+            'Accept':        'text/plain',
+            'Authorization': 'Bearer ' + oauthToken
+          },
+          body: JSON.stringify({
+            sessionType: 'All',
+            utcDateFrom: '2025-01-01T00:00:00Z',
+            utcDateTo:   '2025-12-31T23:59:59Z'
+          })
+        });
+        if (!discResp.ok) throw new Error(`Discovery failed (${discResp.status})`);
         const sessions = await discResp.json();
-
-        // fetch balls for each session
+        if (!sessions.length) {
+          tableau.abortWithError('No sessions found.');
+          return;
+        }
         for (const sess of sessions) {
-          const ballsResp = await fetch(
-            `${apiBase}/data/game/balls/${sess.sessionId}`,
-            {
-              method:  'GET',
-              headers: {
-                'Accept':        'application/json',
-                'Authorization': 'Bearer ' + oauthToken
-              }
+          const ballsUrl = (proxyUrl || '') + `${apiBase}/data/game/balls/${sess.sessionId}`;
+          const ballsResp = await fetch(ballsUrl, {
+            method: 'GET',
+            headers: {
+              'Accept':        'application/json',
+              'Authorization': 'Bearer ' + oauthToken
             }
-          );
+          });
           if (!ballsResp.ok) throw new Error(`Balls fetch failed (${ballsResp.status})`);
           const balls = await ballsResp.json();
-          const rows = balls.map(item => ({ /* map fields as before */
+          const rows = balls.map(item => ({
             sessionId: sess.sessionId,
             playId:    item.playId,
             trackId:   item.trackId,
@@ -177,8 +170,13 @@
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector v4</h1>
-  <button onclick="tableau.connectionName='TrackMan Balls v4'; tableau.submit();">
+  <h1>TrackMan Tableau Web Data Connector v5</h1>
+  <p>If you see <code>failed to fetch</code>, it is likely a CORS restriction by TrackMan’s API. Either:</p>
+  <ul>
+    <li>Set up your own CORS proxy (e.g. AWS Lambda, Netlify Function) and configure <code>proxyUrl</code>.</li>
+    <li>Request that TrackMan enable <code>Access-Control-Allow-Origin: *</code> on their server.</li>
+  </ul>
+  <button onclick="tableau.connectionName='TrackMan Balls v5'; tableau.submit();">
     Connect to TrackMan API
   </button>
 </body>
