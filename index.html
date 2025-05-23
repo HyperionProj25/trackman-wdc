@@ -2,53 +2,69 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector v6</title>
+  <title>TrackMan Tableau Web Data Connector v7</title>
   <!-- Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
-    // ======= CONFIGURATION =======
+    // Wait for Tableau WDC library to load
+    if (typeof tableau === 'undefined') {
+      console.error('Tableau WDC library not loaded');
+      document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('error-message').style.display = 'block';
+      });
+    }
+    // ======= CONFIGURATION: Your TrackMan API credentials =======
     const clientId     = 'SheldonMcClelland-baseline';
     const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
     const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
-    // Use AllOrigins raw proxy to avoid CORS errors
-    const proxyUrl     = 'https://api.allorigins.win/raw?url=';
+    
+    // CORS proxy to bypass browser restrictions
+    const proxyUrl = 'https://api.allorigins.win/raw?url=';
 
-    // Tell Tableau we’re doing custom OAuth
+    // Tell Tableau we're doing custom OAuth
     tableau.authType = tableau.authTypeEnum.custom;
 
+    // ======= INTERNAL STATE =======
     let oauthToken = null;
-    let tokenExpiry = 0;
+    let tokenExpiry = 0;  // timestamp (ms) when token needs renewal
 
-    // Obtain OAuth2 token (client_credentials grant)
+    /** Obtain OAuth2 token (client_credentials grant) **/
     async function fetchToken() {
       const params = new URLSearchParams();
       params.append('client_id', clientId);
       params.append('client_secret', clientSecret);
       params.append('grant_type', 'client_credentials');
 
-      const resp = await fetch(oauthUrl, {
+      const resp = await fetch(proxyUrl + encodeURIComponent(oauthUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params
       });
       if (!resp.ok) throw new Error('Token request failed: ' + resp.statusText);
+
       const data = await resp.json();
       oauthToken = data.access_token;
+      // expire a minute early to account for clock skew
       tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
     }
 
-    // Ensure valid token
+    /** Ensure we have a valid token before calling any endpoint **/
     async function ensureToken() {
       if (!oauthToken || Date.now() >= tokenExpiry) {
         await fetchToken();
       }
     }
 
+    // Create the Tableau connector
     const myConnector = tableau.makeConnector();
 
-    myConnector.init = initCallback => initCallback();
+    // Optional init callback
+    myConnector.init = initCallback => {
+      initCallback();
+    };
 
+    /** Define the schema: all fields your Tableau metrics rely on **/
     myConnector.getSchema = schemaCallback => {
       const cols = [
         { id: 'sessionId',      dataType: tableau.dataTypeEnum.string },
@@ -85,17 +101,18 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls_v6', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v7', columns: cols }]);
     };
 
+    /** Fetch & parse data: discover sessions → get balls for each session **/
     myConnector.getData = async (table, doneCallback) => {
       try {
         await ensureToken();
 
-        // 1) Discover sessions
-        const discUrl = proxyUrl + encodeURIComponent(apiBase + '/discovery/game/sessions');
-        const discResp = await fetch(discUrl, {
-          method: 'POST',
+        // 1) Discover sessions (using proxy to bypass CORS)
+        const discUrl = encodeURIComponent(`${apiBase}/discovery/game/sessions`);
+        const discResp = await fetch(proxyUrl + discUrl, {
+          method:  'POST',
           headers: {
             'Content-Type':  'application/json-patch+json',
             'Accept':        'text/plain',
@@ -107,51 +124,58 @@
             utcDateTo:   '2025-12-31T23:59:59Z'
           })
         });
-        if (!discResp.ok) throw new Error(`Discovery failed (${discResp.status})`);
+        if (!discResp.ok) {
+          throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
+        }
         const sessions = await discResp.json();
-        if (!sessions.length) return tableau.abortWithError('No sessions found.');
+        if (!sessions.length) {
+          tableau.abortWithError('No sessions found for the given date range.');
+          return;
+        }
 
-        // 2) Fetch balls for each session
+        // 2) For each session, pull ball data (using proxy)
         for (const sess of sessions) {
-          const ballsUrl = proxyUrl + encodeURIComponent(apiBase + '/data/game/balls/' + sess.sessionId);
-          const ballsResp = await fetch(ballsUrl, {
-            method: 'GET',
+          const ballsUrl = encodeURIComponent(`${apiBase}/data/game/balls/${sess.sessionId}`);
+          const ballsResp = await fetch(proxyUrl + ballsUrl, {
+            method:  'GET',
             headers: {
               'Accept':        'application/json',
               'Authorization': 'Bearer ' + oauthToken
             }
           });
-          if (!ballsResp.ok) throw new Error(`Balls fetch failed (${ballsResp.status})`);
+          if (!ballsResp.ok) {
+            throw new Error(`Balls fetch failed (${ballsResp.status}): ${await ballsResp.text()}`);
+          }
           const balls = await ballsResp.json();
 
-          // 3) Append rows
+          // 3) Map JSON to Tableau rows
           const rows = balls.map(item => ({
             sessionId:       sess.sessionId,
             playId:          item.playId,
             trackId:         item.trackId,
             trackStartTime:  item.trackStartTime,
             kind:            item.kind,
-            relSpeed:        item.pitch.release.relSpeed,
-            spinRate:        item.pitch.release.spinRate,
-            extension:       item.pitch.release.extension,
-            vertRelAngle:    item.pitch.release.vertRelAngle,
-            horzRelAngle:    item.pitch.release.horzRelAngle,
-            relHeight:       item.pitch.release.relHeight,
-            relSide:         item.pitch.release.relSide,
-            horzBreak:       item.pitch.movement.horzBreak,
-            vertBreak:       item.pitch.movement.vertBreak,
-            inducedVertBreak: item.pitch.movement.inducedVertBreak,
-            spinAxis:        item.pitch.movement.spinAxis,
-            tilt:            item.pitch.movement.tilt,
-            zoneTime:        item.pitch.location.zoneTime,
-            plateLocHeight:  item.pitch.location.plateLocHeight,
-            plateLocSide:    item.pitch.location.plateLocSide,
-            zoneSpeed:       item.pitch.location.zoneSpeed,
-            vertApprAngle:   item.pitch.location.vertApprAngle,
-            horzApprAngle:   item.pitch.location.horzApprAngle,
-            pfxx:            item.pitch.pfxData?.pfxx,
-            pfxz:            item.pitch.pfxData?.pfxz,
-            effVelocity:     item.pitch.pfxData?.effVelocity,
+            relSpeed:        item.pitch?.release?.relSpeed,
+            spinRate:        item.pitch?.release?.spinRate,
+            extension:       item.pitch?.release?.extension,
+            vertRelAngle:    item.pitch?.release?.vertRelAngle,
+            horzRelAngle:    item.pitch?.release?.horzRelAngle,
+            relHeight:       item.pitch?.release?.relHeight,
+            relSide:         item.pitch?.release?.relSide,
+            horzBreak:       item.pitch?.movement?.horzBreak,
+            vertBreak:       item.pitch?.movement?.vertBreak,
+            inducedVertBreak: item.pitch?.movement?.inducedVertBreak,
+            spinAxis:        item.pitch?.movement?.spinAxis,
+            tilt:            item.pitch?.movement?.tilt,
+            zoneTime:        item.pitch?.location?.zoneTime,
+            plateLocHeight:  item.pitch?.location?.plateLocHeight,
+            plateLocSide:    item.pitch?.location?.plateLocSide,
+            zoneSpeed:       item.pitch?.location?.zoneSpeed,
+            vertApprAngle:   item.pitch?.location?.vertApprAngle,
+            horzApprAngle:   item.pitch?.location?.horzApprAngle,
+            pfxx:            item.pitch?.pfxData?.pfxx,
+            pfxz:            item.pitch?.pfxData?.pfxz,
+            effVelocity:     item.pitch?.pfxData?.effVelocity,
             pitchNo:         item.taggerPitch?.pitchNo,
             inning:          item.gameState?.inning,
             balls:           item.gameState?.balls,
@@ -162,19 +186,30 @@
           }));
           table.appendRows(rows);
         }
+
         doneCallback();
       } catch (err) {
-        tableau.abortWithError(err.toString());
+        tableau.abortWithError('Error: ' + err.toString());
       }
     };
 
-    tableau.registerConnector(myConnector);
+    // Register the connector only after ensuring tableau is available
+    if (typeof tableau !== 'undefined') {
+      tableau.registerConnector(myConnector);
+    } else {
+      console.error('Cannot register connector: tableau object not available');
+    }
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector v6</h1>
-  <button onclick="tableau.connectionName='TrackMan Balls v6'; tableau.submit();">
-    Connect to TrackMan API
+  <h1>TrackMan Tableau Web Data Connector v7</h1>
+  <div id="error-message" style="display:none; color:red; margin:10px 0;">
+    <strong>Error:</strong> This connector must be opened within Tableau Desktop's Web Data Connector interface.
+    <br>Go to Tableau Desktop → Connect → To a Server → Web Data Connector → Enter this page's URL
+  </div>
+  <p>Click below to authenticate and pull your TrackMan data via CORS proxy.</p>
+  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v7'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
+    Connect to TrackMan API v7
   </button>
 </body>
 </html>
