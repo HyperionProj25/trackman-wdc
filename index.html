@@ -60,9 +60,9 @@
                         } else if (errorData.body) {
                             try {
                                 const actualError = JSON.parse(errorData.body);
-                                errorMessage += ` - Target Error: ${actualError.error_description || actualError.error || String(errorData.body).substring(0,100)}`;
+                                errorMessage += ` -  Error: ${actualError.error_description || actualError.error || String(errorData.body).substring(0,100)}`;
                             } catch (e_parse_body) {
-                                errorMessage += ` - Target Response (unparsable): ${String(errorData.body).substring(0,100)}`;
+                                errorMessage += ` -  Response (unparsable): ${String(errorData.body).substring(0,100)}`;
                             }
                         } else if (errorData.error) {
                             errorMessage += ` - Error: ${errorData.error}`;
@@ -193,7 +193,7 @@
 
             // ======= !!! IMPORTANT: SET YOUR TARGET DATE FOR PRACTICE DATA HERE !!! =======
             // Format: "YYYY-MM-DD"
-            const targetDateString = "2024-07-10"; // EXAMPLE DATE - REPLACE THIS with a known practice day!
+            const targetDateString = "2025-05-16"; // EXAMPLE DATE - REPLACE THIS with a known practice day!
             // ======= !!! END OF TARGET DATE SETTING !!! =======
 
             const utcDateFrom = targetDateString + "T00:00:00Z";
