@@ -19,8 +19,8 @@
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
     const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
     
-    // CORS proxy - try a different one that handles POST better
-    const proxyUrl = 'https://thingproxy.freeboard.io/fetch/';
+    // Try direct connection first, fallback to test data if CORS fails
+    const useTestData = true; // Set to false once CORS is resolved
 
     // Tell Tableau we're doing custom OAuth
     tableau.authType = tableau.authTypeEnum.custom;
@@ -101,99 +101,121 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls_v8', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v9', columns: cols }]);
     };
 
-    /** Fetch & parse data: discover sessions → get balls for each session **/
+    /** Fetch & parse data: try direct API, fallback to test data **/
     myConnector.getData = async (table, doneCallback) => {
       try {
+        if (useTestData) {
+          // Provide sample data that matches your schema for testing
+          const testRows = [
+            {
+              sessionId: 'test-session-001',
+              playId: 'play-001',
+              trackId: 'track-001',
+              trackStartTime: '2025-01-15T14:30:00Z',
+              kind: 'Pitch',
+              relSpeed: 92.5,
+              spinRate: 2400,
+              extension: 6.2,
+              vertRelAngle: 12.5,
+              horzRelAngle: -1.2,
+              relHeight: 6.1,
+              relSide: 2.1,
+              horzBreak: 8.5,
+              vertBreak: 16.2,
+              inducedVertBreak: 14.8,
+              spinAxis: 225,
+              tilt: '7:30',
+              zoneTime: 0.42,
+              plateLocHeight: 2.8,
+              plateLocSide: 0.3,
+              zoneSpeed: 85.2,
+              vertApprAngle: -6.2,
+              horzApprAngle: 0.8,
+              pfxx: 0.85,
+              pfxz: 1.12,
+              effVelocity: 87.3,
+              pitchNo: 1,
+              inning: 1,
+              balls: 0,
+              strikes: 0,
+              outs: 0,
+              taggedPitchType: 'Fastball',
+              pitchCall: 'Strike'
+            },
+            {
+              sessionId: 'test-session-001',
+              playId: 'play-002',
+              trackId: 'track-002',
+              trackStartTime: '2025-01-15T14:31:00Z',
+              kind: 'Pitch',
+              relSpeed: 78.3,
+              spinRate: 2850,
+              extension: 6.0,
+              vertRelAngle: 8.2,
+              horzRelAngle: -2.1,
+              relHeight: 5.9,
+              relSide: 1.8,
+              horzBreak: 12.8,
+              vertBreak: 4.2,
+              inducedVertBreak: 2.1,
+              spinAxis: 45,
+              tilt: '1:30',
+              zoneTime: 0.51,
+              plateLocHeight: 1.9,
+              plateLocSide: -0.8,
+              zoneSpeed: 72.1,
+              vertApprAngle: -8.5,
+              horzApprAngle: -1.2,
+              pfxx: -0.95,
+              pfxz: 0.32,
+              effVelocity: 74.8,
+              pitchNo: 2,
+              inning: 1,
+              balls: 1,
+              strikes: 0,
+              outs: 0,
+              taggedPitchType: 'Slider',
+              pitchCall: 'Ball'
+            }
+          ];
+          
+          console.log('Using test data - ', testRows.length, 'rows');
+          table.appendRows(testRows);
+          doneCallback();
+          return;
+        }
+
+        // Try real API connection (will likely still fail due to CORS)
         await ensureToken();
 
-        // 1) Discover sessions (using different proxy)
-        const discUrl = `${apiBase}/discovery/game/sessions`;
-        console.log('Fetching sessions from:', proxyUrl + discUrl);
-        
-        const discResp = await fetch(proxyUrl + discUrl, {
-          method:  'POST',
+        const resp = await fetch(`${apiBase}/discovery/game/sessions`, {
+          method: 'POST',
           headers: {
-            'Content-Type':  'application/json-patch+json',
-            'Accept':        'text/plain',
+            'Content-Type': 'application/json-patch+json',
+            'Accept': 'text/plain',
             'Authorization': 'Bearer ' + oauthToken
           },
           body: JSON.stringify({
             sessionType: 'All',
             utcDateFrom: '2025-01-01T00:00:00Z',
-            utcDateTo:   '2025-12-31T23:59:59Z'
+            utcDateTo: '2025-12-31T23:59:59Z'
           })
         });
-        if (!discResp.ok) {
-          throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
+        
+        if (!resp.ok) {
+          throw new Error(`API failed (${resp.status}): ${await resp.text()}`);
         }
-        const sessions = await discResp.json();
-        if (!sessions.length) {
-          tableau.abortWithError('No sessions found for the given date range.');
-          return;
-        }
-
-        // 2) For each session, pull ball data (using proxy)
-        for (const sess of sessions.slice(0, 1)) { // Limit to first session for testing
-          const ballsUrl = `${apiBase}/data/game/balls/${sess.sessionId}`;
-          console.log('Fetching balls from:', proxyUrl + ballsUrl);
-          
-          const ballsResp = await fetch(proxyUrl + ballsUrl, {
-            method:  'GET',
-            headers: {
-              'Accept':        'application/json',
-              'Authorization': 'Bearer ' + oauthToken
-            }
-          });
-          if (!ballsResp.ok) {
-            throw new Error(`Balls fetch failed (${ballsResp.status}): ${await ballsResp.text()}`);
-          }
-          const balls = await ballsResp.json();
-
-          // 3) Map JSON to Tableau rows
-          const rows = balls.map(item => ({
-            sessionId:       sess.sessionId,
-            playId:          item.playId,
-            trackId:         item.trackId,
-            trackStartTime:  item.trackStartTime,
-            kind:            item.kind,
-            relSpeed:        item.pitch?.release?.relSpeed,
-            spinRate:        item.pitch?.release?.spinRate,
-            extension:       item.pitch?.release?.extension,
-            vertRelAngle:    item.pitch?.release?.vertRelAngle,
-            horzRelAngle:    item.pitch?.release?.horzRelAngle,
-            relHeight:       item.pitch?.release?.relHeight,
-            relSide:         item.pitch?.release?.relSide,
-            horzBreak:       item.pitch?.movement?.horzBreak,
-            vertBreak:       item.pitch?.movement?.vertBreak,
-            inducedVertBreak: item.pitch?.movement?.inducedVertBreak,
-            spinAxis:        item.pitch?.movement?.spinAxis,
-            tilt:            item.pitch?.movement?.tilt,
-            zoneTime:        item.pitch?.location?.zoneTime,
-            plateLocHeight:  item.pitch?.location?.plateLocHeight,
-            plateLocSide:    item.pitch?.location?.plateLocSide,
-            zoneSpeed:       item.pitch?.location?.zoneSpeed,
-            vertApprAngle:   item.pitch?.location?.vertApprAngle,
-            horzApprAngle:   item.pitch?.location?.horzApprAngle,
-            pfxx:            item.pitch?.pfxData?.pfxx,
-            pfxz:            item.pitch?.pfxData?.pfxz,
-            effVelocity:     item.pitch?.pfxData?.effVelocity,
-            pitchNo:         item.taggerPitch?.pitchNo,
-            inning:          item.gameState?.inning,
-            balls:           item.gameState?.balls,
-            strikes:         item.gameState?.strikes,
-            outs:            item.gameState?.outs,
-            taggedPitchType: item.pitchTag?.taggedPitchType,
-            pitchCall:       item.pitchTag?.pitchCall
-          }));
-          table.appendRows(rows);
-        }
-
+        
+        const sessions = await resp.json();
+        // Process real data...
+        
         doneCallback();
       } catch (err) {
-        tableau.abortWithError('Error: ' + err.toString());
+        console.error('API Error:', err);
+        tableau.abortWithError('Connection failed: ' + err.toString() + '. Check browser console for details.');
       }
     };
 
@@ -206,14 +228,15 @@
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector v8</h1>
+  <h1>TrackMan Tableau Web Data Connector v9</h1>
   <div id="error-message" style="display:none; color:red; margin:10px 0;">
     <strong>Error:</strong> This connector must be opened within Tableau Desktop's Web Data Connector interface.
     <br>Go to Tableau Desktop → Connect → To a Server → Web Data Connector → Enter this page's URL
   </div>
-  <p>Click below to authenticate and pull your TrackMan data via CORS proxy (v8 - ThingProxy).</p>
-  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v8'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
-    Connect to TrackMan API v8
+  <p><strong>Testing Version:</strong> This version uses sample TrackMan data to verify the connection works.</p>
+  <p>Once confirmed working, we'll switch back to live API data.</p>
+  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v9'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
+    Connect to TrackMan API v9 (Test Data)
   </button>
 </body>
 </html>
