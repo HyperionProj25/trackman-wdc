@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector v8</title>
+  <title>TrackMan Tableau Web Data Connector v10</title>
   <!-- Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
@@ -13,14 +13,18 @@
         document.getElementById('error-message').style.display = 'block';
       });
     }
+
     // ======= CONFIGURATION: Your TrackMan API credentials =======
     const clientId     = 'SheldonMcClelland-baseline';
     const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
     const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
     
-    // Try direct connection first, fallback to test data if CORS fails
-    const useTestData = true; // Set to false once CORS is resolved
+    // Netlify proxy URL - Updated with your actual site
+    const proxyUrl = 'https://tmapi.netlify.app/.netlify/functions/trackman-proxy?url=';
+    
+    // Set to false to use real API data via Netlify proxy
+    const useTestData = false;
 
     // Tell Tableau we're doing custom OAuth
     tableau.authType = tableau.authTypeEnum.custom;
@@ -36,7 +40,7 @@
       params.append('client_secret', clientSecret);
       params.append('grant_type', 'client_credentials');
 
-      const resp = await fetch(proxyUrl + oauthUrl, {
+      const resp = await fetch(proxyUrl + encodeURIComponent(oauthUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params
@@ -101,10 +105,10 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls_v9', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v10', columns: cols }]);
     };
 
-    /** Fetch & parse data: try direct API, fallback to test data **/
+    /** Fetch & parse data: try real API via Netlify proxy, fallback to test data **/
     myConnector.getData = async (table, doneCallback) => {
       try {
         if (useTestData) {
@@ -188,10 +192,12 @@
           return;
         }
 
-        // Try real API connection (will likely still fail due to CORS)
+        // Use Netlify proxy to fetch real TrackMan data
         await ensureToken();
 
-        const resp = await fetch(`${apiBase}/discovery/game/sessions`, {
+        // 1) Discover sessions via proxy
+        const discUrl = encodeURIComponent(`${apiBase}/discovery/game/sessions`);
+        const discResp = await fetch(proxyUrl + discUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json-patch+json',
@@ -205,13 +211,74 @@
           })
         });
         
-        if (!resp.ok) {
-          throw new Error(`API failed (${resp.status}): ${await resp.text()}`);
+        if (!discResp.ok) {
+          throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
         }
         
-        const sessions = await resp.json();
-        // Process real data...
-        
+        const sessions = await discResp.json();
+        if (!sessions.length) {
+          tableau.abortWithError('No sessions found for the given date range.');
+          return;
+        }
+
+        // 2) For each session, pull ball data via proxy
+        for (const sess of sessions.slice(0, 2)) { // Limit to first 2 sessions
+          const ballsUrl = encodeURIComponent(`${apiBase}/data/game/balls/${sess.sessionId}`);
+          const ballsResp = await fetch(proxyUrl + ballsUrl, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/json',
+              'Authorization': 'Bearer ' + oauthToken
+            }
+          });
+          
+          if (!ballsResp.ok) {
+            console.warn(`Balls fetch failed for session ${sess.sessionId}: ${ballsResp.status}`);
+            continue;
+          }
+          
+          const balls = await ballsResp.json();
+
+          // 3) Map JSON to Tableau rows
+          const rows = balls.map(item => ({
+            sessionId: sess.sessionId,
+            playId: item.playId,
+            trackId: item.trackId,
+            trackStartTime: item.trackStartTime,
+            kind: item.kind,
+            relSpeed: item.pitch?.release?.relSpeed,
+            spinRate: item.pitch?.release?.spinRate,
+            extension: item.pitch?.release?.extension,
+            vertRelAngle: item.pitch?.release?.vertRelAngle,
+            horzRelAngle: item.pitch?.release?.horzRelAngle,
+            relHeight: item.pitch?.release?.relHeight,
+            relSide: item.pitch?.release?.relSide,
+            horzBreak: item.pitch?.movement?.horzBreak,
+            vertBreak: item.pitch?.movement?.vertBreak,
+            inducedVertBreak: item.pitch?.movement?.inducedVertBreak,
+            spinAxis: item.pitch?.movement?.spinAxis,
+            tilt: item.pitch?.movement?.tilt,
+            zoneTime: item.pitch?.location?.zoneTime,
+            plateLocHeight: item.pitch?.location?.plateLocHeight,
+            plateLocSide: item.pitch?.location?.plateLocSide,
+            zoneSpeed: item.pitch?.location?.zoneSpeed,
+            vertApprAngle: item.pitch?.location?.vertApprAngle,
+            horzApprAngle: item.pitch?.location?.horzApprAngle,
+            pfxx: item.pitch?.pfxData?.pfxx,
+            pfxz: item.pitch?.pfxData?.pfxz,
+            effVelocity: item.pitch?.pfxData?.effVelocity,
+            pitchNo: item.taggerPitch?.pitchNo,
+            inning: item.gameState?.inning,
+            balls: item.gameState?.balls,
+            strikes: item.gameState?.strikes,
+            outs: item.gameState?.outs,
+            taggedPitchType: item.pitchTag?.taggedPitchType,
+            pitchCall: item.pitchTag?.pitchCall
+          }));
+          
+          table.appendRows(rows);
+        }
+
         doneCallback();
       } catch (err) {
         console.error('API Error:', err);
@@ -228,15 +295,15 @@
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector v9</h1>
+  <h1>TrackMan Tableau Web Data Connector v10</h1>
   <div id="error-message" style="display:none; color:red; margin:10px 0;">
     <strong>Error:</strong> This connector must be opened within Tableau Desktop's Web Data Connector interface.
     <br>Go to Tableau Desktop → Connect → To a Server → Web Data Connector → Enter this page's URL
   </div>
-  <p><strong>Testing Version:</strong> This version uses sample TrackMan data to verify the connection works.</p>
-  <p>Once confirmed working, we'll switch back to live API data.</p>
-  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v9'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
-    Connect to TrackMan API v9 (Test Data)
+  <p><strong>Live API Version:</strong> Uses Netlify serverless function to bypass CORS restrictions.</p>
+  <p><strong>Ready to use:</strong> Connected to tmapi.netlify.app proxy.</p>
+  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v10'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
+    Connect to TrackMan API v10 (Live Data)
   </button>
 </body>
 </html>
