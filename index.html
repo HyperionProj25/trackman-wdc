@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector v5</title>
+  <title>TrackMan Tableau Web Data Connector v6</title>
   <!-- Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
@@ -10,18 +10,17 @@
     const clientId     = 'SheldonMcClelland-baseline';
     const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
-    const apiHost      = 'https://release-dataapi.trackmanbaseball.com';
-    const apiBase      = apiHost + '/api/v1';
-    // If TrackMan API does not allow CORS, set up and use your own CORS proxy:
-    // e.g. const proxyUrl = 'https://your-proxy.com/';
-    const proxyUrl     = '';
+    const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
+    // Use AllOrigins raw proxy to avoid CORS errors
+    const proxyUrl     = 'https://api.allorigins.win/raw?url=';
 
-    // Custom OAuth for Tableau
+    // Tell Tableau we’re doing custom OAuth
     tableau.authType = tableau.authTypeEnum.custom;
 
     let oauthToken = null;
     let tokenExpiry = 0;
 
+    // Obtain OAuth2 token (client_credentials grant)
     async function fetchToken() {
       const params = new URLSearchParams();
       params.append('client_id', clientId);
@@ -39,6 +38,7 @@
       tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
     }
 
+    // Ensure valid token
     async function ensureToken() {
       if (!oauthToken || Date.now() >= tokenExpiry) {
         await fetchToken();
@@ -85,14 +85,15 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls_v5', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v6', columns: cols }]);
     };
 
     myConnector.getData = async (table, doneCallback) => {
       try {
         await ensureToken();
-        // Build URL with proxy if needed
-        const discUrl = (proxyUrl || '') + `${apiBase}/discovery/game/sessions`;
+
+        // 1) Discover sessions
+        const discUrl = proxyUrl + encodeURIComponent(apiBase + '/discovery/game/sessions');
         const discResp = await fetch(discUrl, {
           method: 'POST',
           headers: {
@@ -108,12 +109,11 @@
         });
         if (!discResp.ok) throw new Error(`Discovery failed (${discResp.status})`);
         const sessions = await discResp.json();
-        if (!sessions.length) {
-          tableau.abortWithError('No sessions found.');
-          return;
-        }
+        if (!sessions.length) return tableau.abortWithError('No sessions found.');
+
+        // 2) Fetch balls for each session
         for (const sess of sessions) {
-          const ballsUrl = (proxyUrl || '') + `${apiBase}/data/game/balls/${sess.sessionId}`;
+          const ballsUrl = proxyUrl + encodeURIComponent(apiBase + '/data/game/balls/' + sess.sessionId);
           const ballsResp = await fetch(ballsUrl, {
             method: 'GET',
             headers: {
@@ -123,40 +123,42 @@
           });
           if (!ballsResp.ok) throw new Error(`Balls fetch failed (${ballsResp.status})`);
           const balls = await ballsResp.json();
+
+          // 3) Append rows
           const rows = balls.map(item => ({
-            sessionId: sess.sessionId,
-            playId:    item.playId,
-            trackId:   item.trackId,
-            trackStartTime: item.trackStartTime,
-            kind:      item.kind,
-            relSpeed:  item.pitch.release.relSpeed,
-            spinRate:  item.pitch.release.spinRate,
-            extension: item.pitch.release.extension,
-            vertRelAngle: item.pitch.release.vertRelAngle,
-            horzRelAngle: item.pitch.release.horzRelAngle,
-            relHeight: item.pitch.release.relHeight,
-            relSide:   item.pitch.release.relSide,
-            horzBreak: item.pitch.movement.horzBreak,
-            vertBreak: item.pitch.movement.vertBreak,
+            sessionId:       sess.sessionId,
+            playId:          item.playId,
+            trackId:         item.trackId,
+            trackStartTime:  item.trackStartTime,
+            kind:            item.kind,
+            relSpeed:        item.pitch.release.relSpeed,
+            spinRate:        item.pitch.release.spinRate,
+            extension:       item.pitch.release.extension,
+            vertRelAngle:    item.pitch.release.vertRelAngle,
+            horzRelAngle:    item.pitch.release.horzRelAngle,
+            relHeight:       item.pitch.release.relHeight,
+            relSide:         item.pitch.release.relSide,
+            horzBreak:       item.pitch.movement.horzBreak,
+            vertBreak:       item.pitch.movement.vertBreak,
             inducedVertBreak: item.pitch.movement.inducedVertBreak,
-            spinAxis:  item.pitch.movement.spinAxis,
-            tilt:      item.pitch.movement.tilt,
-            zoneTime:  item.pitch.location.zoneTime,
-            plateLocHeight: item.pitch.location.plateLocHeight,
-            plateLocSide:   item.pitch.location.plateLocSide,
-            zoneSpeed: item.pitch.location.zoneSpeed,
-            vertApprAngle: item.pitch.location.vertApprAngle,
-            horzApprAngle: item.pitch.location.horzApprAngle,
-            pfxx:      item.pitch.pfxData?.pfxx,
-            pfxz:      item.pitch.pfxData?.pfxz,
-            effVelocity: item.pitch.pfxData?.effVelocity,
-            pitchNo:   item.taggerPitch?.pitchNo,
-            inning:    item.gameState?.inning,
-            balls:     item.gameState?.balls,
-            strikes:   item.gameState?.strikes,
-            outs:      item.gameState?.outs,
+            spinAxis:        item.pitch.movement.spinAxis,
+            tilt:            item.pitch.movement.tilt,
+            zoneTime:        item.pitch.location.zoneTime,
+            plateLocHeight:  item.pitch.location.plateLocHeight,
+            plateLocSide:    item.pitch.location.plateLocSide,
+            zoneSpeed:       item.pitch.location.zoneSpeed,
+            vertApprAngle:   item.pitch.location.vertApprAngle,
+            horzApprAngle:   item.pitch.location.horzApprAngle,
+            pfxx:            item.pitch.pfxData?.pfxx,
+            pfxz:            item.pitch.pfxData?.pfxz,
+            effVelocity:     item.pitch.pfxData?.effVelocity,
+            pitchNo:         item.taggerPitch?.pitchNo,
+            inning:          item.gameState?.inning,
+            balls:           item.gameState?.balls,
+            strikes:         item.gameState?.strikes,
+            outs:            item.gameState?.outs,
             taggedPitchType: item.pitchTag?.taggedPitchType,
-            pitchCall: item.pitchTag?.pitchCall
+            pitchCall:       item.pitchTag?.pitchCall
           }));
           table.appendRows(rows);
         }
@@ -170,13 +172,8 @@
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector v5</h1>
-  <p>If you see <code>failed to fetch</code>, it is likely a CORS restriction by TrackMan’s API. Either:</p>
-  <ul>
-    <li>Set up your own CORS proxy (e.g. AWS Lambda, Netlify Function) and configure <code>proxyUrl</code>.</li>
-    <li>Request that TrackMan enable <code>Access-Control-Allow-Origin: *</code> on their server.</li>
-  </ul>
-  <button onclick="tableau.connectionName='TrackMan Balls v5'; tableau.submit();">
+  <h1>TrackMan Tableau Web Data Connector v6</h1>
+  <button onclick="tableau.connectionName='TrackMan Balls v6'; tableau.submit();">
     Connect to TrackMan API
   </button>
 </body>
