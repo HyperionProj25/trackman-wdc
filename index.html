@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector</title>
+  <title>TrackMan Tableau Web Data Connector v4</title>
   <!-- Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
@@ -10,16 +10,19 @@
     const clientId     = 'SheldonMcClelland-baseline';
     const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
-    const apiBase      = 'https://dataapi.trackmanbaseball.com/api/v1';
+    // Use the 'release' host for up-to-date CORS support per Quick Start v2.6
+    const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
 
     // Tell Tableau we’re doing custom OAuth
     tableau.authType = tableau.authTypeEnum.custom;
 
     // ======= INTERNAL STATE =======
     let oauthToken = null;
-    let tokenExpiry = 0;  // timestamp (ms) when token needs renewal
+    let tokenExpiry = 0;
 
-    /** Obtain OAuth2 token (client_credentials grant) **/
+    /**
+     * Obtain OAuth2 token (client_credentials grant) fileciteturn4file1
+     */
     async function fetchToken() {
       const params = new URLSearchParams();
       params.append('client_id', clientId);
@@ -32,36 +35,31 @@
         body: params
       });
       if (!resp.ok) throw new Error('Token request failed: ' + resp.statusText);
-
       const data = await resp.json();
       oauthToken = data.access_token;
-      // expire a minute early to account for clock skew
       tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
     }
 
-    /** Ensure we have a valid token before calling any endpoint **/
+    /** Ensure valid token **/
     async function ensureToken() {
-      if (!oauthToken || Date.now() >= tokenExpiry) {
-        await fetchToken();
-      }
+      if (!oauthToken || Date.now() >= tokenExpiry) await fetchToken();
     }
 
-    // Create the Tableau connector
     const myConnector = tableau.makeConnector();
 
-    // Optional init callback
     myConnector.init = initCallback => {
       initCallback();
     };
 
-    /** Define the schema: all fields your Tableau metrics rely on **/
     myConnector.getSchema = schemaCallback => {
       const cols = [
+        // --- identifiers ---
         { id: 'sessionId',      dataType: tableau.dataTypeEnum.string },
         { id: 'playId',         dataType: tableau.dataTypeEnum.string },
         { id: 'trackId',        dataType: tableau.dataTypeEnum.string },
         { id: 'trackStartTime', dataType: tableau.dataTypeEnum.datetime },
         { id: 'kind',           dataType: tableau.dataTypeEnum.string },
+        // --- release metrics ---
         { id: 'relSpeed',       dataType: tableau.dataTypeEnum.float },
         { id: 'spinRate',       dataType: tableau.dataTypeEnum.float },
         { id: 'extension',      dataType: tableau.dataTypeEnum.float },
@@ -69,20 +67,24 @@
         { id: 'horzRelAngle',   dataType: tableau.dataTypeEnum.float },
         { id: 'relHeight',      dataType: tableau.dataTypeEnum.float },
         { id: 'relSide',        dataType: tableau.dataTypeEnum.float },
+        // --- movement ---
         { id: 'horzBreak',      dataType: tableau.dataTypeEnum.float },
         { id: 'vertBreak',      dataType: tableau.dataTypeEnum.float },
         { id: 'inducedVertBreak', dataType: tableau.dataTypeEnum.float },
         { id: 'spinAxis',       dataType: tableau.dataTypeEnum.float },
         { id: 'tilt',           dataType: tableau.dataTypeEnum.string },
+        // --- location & approach ---
         { id: 'zoneTime',       dataType: tableau.dataTypeEnum.float },
         { id: 'plateLocHeight', dataType: tableau.dataTypeEnum.float },
         { id: 'plateLocSide',   dataType: tableau.dataTypeEnum.float },
         { id: 'zoneSpeed',      dataType: tableau.dataTypeEnum.float },
         { id: 'vertApprAngle',  dataType: tableau.dataTypeEnum.float },
         { id: 'horzApprAngle',  dataType: tableau.dataTypeEnum.float },
+        // --- derived ---
         { id: 'pfxx',           dataType: tableau.dataTypeEnum.float },
         { id: 'pfxz',           dataType: tableau.dataTypeEnum.float },
         { id: 'effVelocity',    dataType: tableau.dataTypeEnum.float },
+        // --- context ---
         { id: 'pitchNo',        dataType: tableau.dataTypeEnum.int },
         { id: 'inning',         dataType: tableau.dataTypeEnum.int },
         { id: 'balls',          dataType: tableau.dataTypeEnum.int },
@@ -91,15 +93,14 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v4', columns: cols }]);
     };
 
-    /** Fetch & parse data: discover sessions → get balls for each session **/
     myConnector.getData = async (table, doneCallback) => {
       try {
         await ensureToken();
 
-        // 1) Discover sessions (requires Accept: text/plain)
+        // discover sessions (requires accept header) fileciteturn4file0
         const discResp = await fetch(
           `${apiBase}/discovery/game/sessions`,
           {
@@ -109,23 +110,13 @@
               'Accept':        'text/plain',
               'Authorization': 'Bearer ' + oauthToken
             },
-            body: JSON.stringify({
-              sessionType: 'All',
-              utcDateFrom: '2025-01-01T00:00:00Z',
-              utcDateTo:   '2025-12-31T23:59:59Z'
-            })
+            body: JSON.stringify({ sessionType: 'All', utcDateFrom: '2025-01-01T00:00:00Z', utcDateTo: '2025-12-31T23:59:59Z' })
           }
         );
-        if (!discResp.ok) {
-          throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
-        }
+        if (!discResp.ok) throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
         const sessions = await discResp.json();
-        if (!sessions.length) {
-          tableau.abortWithError('No sessions found for the given date range.');
-          return;
-        }
 
-        // 2) For each session, pull ball data (requires Accept: application/json)
+        // fetch balls for each session
         for (const sess of sessions) {
           const ballsResp = await fetch(
             `${apiBase}/data/game/balls/${sess.sessionId}`,
@@ -137,64 +128,57 @@
               }
             }
           );
-          if (!ballsResp.ok) {
-            throw new Error(`Balls fetch failed (${ballsResp.status}): ${await ballsResp.text()}`);
-          }
+          if (!ballsResp.ok) throw new Error(`Balls fetch failed (${ballsResp.status})`);
           const balls = await ballsResp.json();
-
-          // 3) Map JSON to Tableau rows
-          const rows = balls.map(item => ({
-            sessionId:       sess.sessionId,
-            playId:          item.playId,
-            trackId:         item.trackId,
-            trackStartTime:  item.trackStartTime,
-            kind:            item.kind,
-            relSpeed:        item.pitch.release.relSpeed,
-            spinRate:        item.pitch.release.spinRate,
-            extension:       item.pitch.release.extension,
-            vertRelAngle:    item.pitch.release.vertRelAngle,
-            horzRelAngle:    item.pitch.release.horzRelAngle,
-            relHeight:       item.pitch.release.relHeight,
-            relSide:         item.pitch.release.relSide,
-            horzBreak:       item.pitch.movement.horzBreak,
-            vertBreak:       item.pitch.movement.vertBreak,
+          const rows = balls.map(item => ({ /* map fields as before */
+            sessionId: sess.sessionId,
+            playId:    item.playId,
+            trackId:   item.trackId,
+            trackStartTime: item.trackStartTime,
+            kind:      item.kind,
+            relSpeed:  item.pitch.release.relSpeed,
+            spinRate:  item.pitch.release.spinRate,
+            extension: item.pitch.release.extension,
+            vertRelAngle: item.pitch.release.vertRelAngle,
+            horzRelAngle: item.pitch.release.horzRelAngle,
+            relHeight: item.pitch.release.relHeight,
+            relSide:   item.pitch.release.relSide,
+            horzBreak: item.pitch.movement.horzBreak,
+            vertBreak: item.pitch.movement.vertBreak,
             inducedVertBreak: item.pitch.movement.inducedVertBreak,
-            spinAxis:        item.pitch.movement.spinAxis,
-            tilt:            item.pitch.movement.tilt,
-            zoneTime:        item.pitch.location.zoneTime,
-            plateLocHeight:  item.pitch.location.plateLocHeight,
-            plateLocSide:    item.pitch.location.plateLocSide,
-            zoneSpeed:       item.pitch.location.zoneSpeed,
-            vertApprAngle:   item.pitch.location.vertApprAngle,
-            horzApprAngle:   item.pitch.location.horzApprAngle,
-            pfxx:            item.pitch.pfxData?.pfxx,
-            pfxz:            item.pitch.pfxData?.pfxz,
-            effVelocity:     item.pitch.pfxData?.effVelocity,
-            pitchNo:         item.taggerPitch?.pitchNo,
-            inning:          item.gameState?.inning,
-            balls:           item.gameState?.balls,
-            strikes:         item.gameState?.strikes,
-            outs:            item.gameState?.outs,
+            spinAxis:  item.pitch.movement.spinAxis,
+            tilt:      item.pitch.movement.tilt,
+            zoneTime:  item.pitch.location.zoneTime,
+            plateLocHeight: item.pitch.location.plateLocHeight,
+            plateLocSide:   item.pitch.location.plateLocSide,
+            zoneSpeed: item.pitch.location.zoneSpeed,
+            vertApprAngle: item.pitch.location.vertApprAngle,
+            horzApprAngle: item.pitch.location.horzApprAngle,
+            pfxx:      item.pitch.pfxData?.pfxx,
+            pfxz:      item.pitch.pfxData?.pfxz,
+            effVelocity: item.pitch.pfxData?.effVelocity,
+            pitchNo:   item.taggerPitch?.pitchNo,
+            inning:    item.gameState?.inning,
+            balls:     item.gameState?.balls,
+            strikes:   item.gameState?.strikes,
+            outs:      item.gameState?.outs,
             taggedPitchType: item.pitchTag?.taggedPitchType,
-            pitchCall:       item.pitchTag?.pitchCall
+            pitchCall: item.pitchTag?.pitchCall
           }));
           table.appendRows(rows);
         }
-
         doneCallback();
       } catch (err) {
         tableau.abortWithError(err.toString());
       }
     };
 
-    // Register the connector
     tableau.registerConnector(myConnector);
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector</h1>
-  <p>Click below to authenticate and pull your TrackMan data.</p>
-  <button onclick="tableau.connectionName='TrackMan Balls'; tableau.submit();">
+  <h1>TrackMan Tableau Web Data Connector v4</h1>
+  <button onclick="tableau.connectionName='TrackMan Balls v4'; tableau.submit();">
     Connect to TrackMan API
   </button>
 </body>
