@@ -11,13 +11,16 @@
     const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
     const apiBase      = 'https://dataapi.trackmanbaseball.com/api/v1';
-    
+
+    // ======= SIGNAL CUSTOM AUTH TO TABLEAU =======
+    tableau.authType = tableau.authTypeEnum.custom;
+
     // ======= INTERNAL STATE =======
     let oauthToken = null;
     let tokenExpiry = 0;  // timestamp (ms) when token needs renewal
 
     /**
-     * Obtain OAuth2 token (client_credentials grant) fileciteturn1file9
+     * Obtain OAuth2 token (client_credentials grant) fileciteturn2file4
      */
     async function fetchToken() {
       const params = new URLSearchParams();
@@ -38,9 +41,6 @@
       tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
     }
 
-    /**
-     * Ensure we have a valid token before any API call
-     */
     async function ensureToken() {
       if (!oauthToken || Date.now() >= tokenExpiry) {
         await fetchToken();
@@ -50,19 +50,21 @@
     // Create the Tableau connector
     const myConnector = tableau.makeConnector();
 
+    // Optional init: signal ready
+    myConnector.init = initCallback => {
+      initCallback();
+    };
+
     /**
-     * Define the schema: all fields used by our Tableau metrics
+     * Define the schema: all fields for our metrics
      */
     myConnector.getSchema = schemaCallback => {
       const cols = [
-        // Identifiers & metadata
         { id: 'sessionId',    dataType: tableau.dataTypeEnum.string },
         { id: 'playId',       dataType: tableau.dataTypeEnum.string },
         { id: 'trackId',      dataType: tableau.dataTypeEnum.string },
         { id: 'trackStartTime', dataType: tableau.dataTypeEnum.datetime },
         { id: 'kind',         dataType: tableau.dataTypeEnum.string },
-
-        // Release metrics
         { id: 'relSpeed',     dataType: tableau.dataTypeEnum.float },
         { id: 'spinRate',     dataType: tableau.dataTypeEnum.float },
         { id: 'extension',    dataType: tableau.dataTypeEnum.float },
@@ -70,28 +72,20 @@
         { id: 'horzRelAngle', dataType: tableau.dataTypeEnum.float },
         { id: 'relHeight',    dataType: tableau.dataTypeEnum.float },
         { id: 'relSide',      dataType: tableau.dataTypeEnum.float },
-
-        // Movement metrics
         { id: 'horzBreak',    dataType: tableau.dataTypeEnum.float },
         { id: 'vertBreak',    dataType: tableau.dataTypeEnum.float },
         { id: 'inducedVertBreak', dataType: tableau.dataTypeEnum.float },
         { id: 'spinAxis',     dataType: tableau.dataTypeEnum.float },
         { id: 'tilt',         dataType: tableau.dataTypeEnum.string },
-
-        // Approach & location
         { id: 'zoneTime',     dataType: tableau.dataTypeEnum.float },
         { id: 'plateLocHeight', dataType: tableau.dataTypeEnum.float },
         { id: 'plateLocSide', dataType: tableau.dataTypeEnum.float },
         { id: 'zoneSpeed',    dataType: tableau.dataTypeEnum.float },
         { id: 'vertApprAngle', dataType: tableau.dataTypeEnum.float },
         { id: 'horzApprAngle', dataType: tableau.dataTypeEnum.float },
-
-        // Derived data (if present)
         { id: 'pfxx',         dataType: tableau.dataTypeEnum.float },
         { id: 'pfxz',         dataType: tableau.dataTypeEnum.float },
         { id: 'effVelocity',  dataType: tableau.dataTypeEnum.float },
-
-        // Tagger & game context
         { id: 'pitchNo',      dataType: tableau.dataTypeEnum.int },
         { id: 'inning',       dataType: tableau.dataTypeEnum.int },
         { id: 'balls',        dataType: tableau.dataTypeEnum.int },
@@ -99,57 +93,38 @@
         { id: 'outs',         dataType: tableau.dataTypeEnum.int },
         { id: 'taggedPitchType', dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',    dataType: tableau.dataTypeEnum.string }
-
-        // If you need hits, catcher throws, media tokens, or plays, add them similarly
       ];
-
       schemaCallback([{ id: 'TrackManBalls', columns: cols }]);
     };
 
     /**
-     * Fetch & parse data: discover sessions, then get balls for each session fileciteturn1file0fileciteturn1file2
+     * Fetch & parse data: sessions → balls list
      */
     myConnector.getData = async (table, doneCallback) => {
       try {
         await ensureToken();
-
-        // 1) Discover game sessions in your date range
         const discResp = await fetch(`${apiBase}/discovery/game/sessions`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json-patch+json',
             'Authorization': 'Bearer ' + oauthToken
           },
-          body: JSON.stringify({
-            sessionType: "All",        // Or "Standard", "Adhoc", "BattingPractice"
-            utcDateFrom: "2025-01-01T00:00:00Z",
-            utcDateTo:   "2025-12-31T23:59:59Z"
-          })
+          body: JSON.stringify({ sessionType: 'All', utcDateFrom: '2025-01-01T00:00:00Z', utcDateTo: '2025-12-31T23:59:59Z' })
         });
         const sessions = await discResp.json();
-        if (!Array.isArray(sessions) || sessions.length === 0) {
-          tableau.abortWithError('No sessions found for the given date range.');
+        if (!sessions.length) {
+          tableau.abortWithError('No sessions found!');
           return;
         }
-
-        // 2) For each session, pull ball data
         for (const sess of sessions) {
-          const sid = sess.sessionId;
-
-          const ballsResp = await fetch(
-            `${apiBase}/data/game/balls/${sid}`,
-            { headers: { 'Authorization': 'Bearer ' + oauthToken } }
-          );
+          const ballsResp = await fetch(`${apiBase}/data/game/balls/${sess.sessionId}`, { headers: { 'Authorization': 'Bearer ' + oauthToken } });
           const balls = await ballsResp.json();
-
-          // 3) Map JSON to table rows
           const rows = balls.map(item => ({
-            sessionId: sid,
+            sessionId: sess.sessionId,
             playId:    item.playId,
             trackId:   item.trackId,
             trackStartTime: item.trackStartTime,
             kind:      item.kind,
-
             relSpeed:  item.pitch.release.relSpeed,
             spinRate:  item.pitch.release.spinRate,
             extension: item.pitch.release.extension,
@@ -157,40 +132,33 @@
             horzRelAngle: item.pitch.release.horzRelAngle,
             relHeight: item.pitch.release.relHeight,
             relSide:   item.pitch.release.relSide,
-
             horzBreak: item.pitch.movement.horzBreak,
             vertBreak: item.pitch.movement.vertBreak,
             inducedVertBreak: item.pitch.movement.inducedVertBreak,
             spinAxis:  item.pitch.movement.spinAxis,
             tilt:      item.pitch.movement.tilt,
-
             zoneTime:  item.pitch.location.zoneTime,
             plateLocHeight: item.pitch.location.plateLocHeight,
             plateLocSide:   item.pitch.location.plateLocSide,
             zoneSpeed: item.pitch.location.zoneSpeed,
             vertApprAngle: item.pitch.location.vertApprAngle,
             horzApprAngle: item.pitch.location.horzApprAngle,
-
             pfxx:      item.pitch.pfxData?.pfxx,
             pfxz:      item.pitch.pfxData?.pfxz,
             effVelocity: item.pitch.pfxData?.effVelocity,
-
             pitchNo:  item.taggerPitch?.pitchNo,
             inning:   item.gameState?.inning,
             balls:    item.gameState?.balls,
             strikes:  item.gameState?.strikes,
             outs:     item.gameState?.outs,
-
             taggedPitchType: item.pitchTag?.taggedPitchType,
             pitchCall: item.pitchTag?.pitchCall
           }));
-
           table.appendRows(rows);
         }
-
         doneCallback();
       } catch (err) {
-        tableau.abortWithError(err.toString());
+        tableau.abortWithError(err.message);
       }
     };
 
@@ -200,9 +168,10 @@
 </head>
 <body>
   <h1>TrackMan Tableau Web Data Connector</h1>
-  <p>Click below to authenticate and pull your TrackMan ball & pitch data:</p>
-  <button onclick="tableau.connectionName = 'TrackMan Balls'; tableau.submit();">
+  <p>Click below to authenticate and pull your TrackMan data.</p>
+  <button onclick="tableau.connectionName='TrackMan Balls'; tableau.submit();">
     Connect to TrackMan API
   </button>
 </body>
 </html>
+
