@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau WDC - v12-PingTest</title>
+  <title>TrackMan Tableau WDC - v12-SingleDayDiscovery</title>
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
     // Fallback for WDC library load error
@@ -22,10 +22,10 @@
         clientId: 'SheldonMcClelland-baseline',
         clientSecret: '889de571-86db-4c56-a640-e88cd4565526',
         oauthUrl: 'https://login.trackmanbaseball.com/connect/token',
-        apiBase: 'https://dataapi.trackmanbaseball.com/api/v1', // Using dataapi as per PDF
+        apiBase: 'https://dataapi.trackmanbaseball.com/api/v1',
         proxyUrl: 'https://tmapi.netlify.app/.netlify/functions/trackman-proxy?url=',
-        useTestData: false, // This version will not fetch table data anyway
-        schemaIdPitchData: 'TrackManPitchData_v12_PingTest' // Schema ID, though no data will be fetched for it
+        useTestData: false,
+        schemaIdPitchData: 'TrackManPitchData_v12_SingleDayDiscovery'
     };
 
     // ======= OAUTH TOKEN HANDLING =======
@@ -79,12 +79,8 @@
             console.log("WDC: getOAuthToken - Full response object from proxy (first 500 chars):", JSON.stringify(proxyResponseData).substring(0,500));
             let tokenData;
             if (proxyResponseData && typeof proxyResponseData.body === 'string') {
-                try {
-                    tokenData = JSON.parse(proxyResponseData.body);
-                } catch (e) {
-                    console.error("WDC: Failed to parse token data from proxy's response body string:", proxyResponseData.body.substring(0,500));
-                    throw new Error("Failed to parse token data from proxy response (body was string).");
-                }
+                try { tokenData = JSON.parse(proxyResponseData.body); }
+                catch (e) { console.error("WDC: Failed to parse token data from proxy's response body string:", proxyResponseData.body.substring(0,500)); throw new Error("Failed to parse token data (body was string)."); }
             } else if (proxyResponseData && typeof proxyResponseData.body === 'object' && proxyResponseData.body !== null) {
                 tokenData = proxyResponseData.body;
             } else if (proxyResponseData && proxyResponseData.access_token) {
@@ -94,25 +90,16 @@
                 throw new Error("Token data not found in expected proxy response structure.");
             }
 
-            if (tokenData.error) {
-                console.error("WDC: OAuth Error (from token endpoint):", tokenData.error, tokenData.error_description);
-                throw new Error(tokenData.error_description || tokenData.error || "Unknown OAuth error from token endpoint.");
-            }
-            if (!tokenData.access_token) {
-                console.error("WDC: access_token not found in processed OAuth response:", tokenData);
-                throw new Error("Access token not found in processed OAuth response.");
-            }
+            if (tokenData.error) { throw new Error(tokenData.error_description || tokenData.error || "Unknown OAuth error."); }
+            if (!tokenData.access_token) { throw new Error("Access token not found in OAuth response."); }
             console.log("WDC: New OAuth access_token fetched successfully.");
-            if (tokenData.expires_in) {
-                const expiryDate = new Date(Date.now() + tokenData.expires_in * 1000);
-                console.log(`WDC: Token expires_in: ${tokenData.expires_in}s. Approx expiry: ${expiryDate} (Client Time)`);
-            }
-            tableau.password = tokenData.access_token; // Store token for Tableau
+            if (tokenData.expires_in) { console.log(`WDC: Token expires_in: ${tokenData.expires_in}s. Approx expiry: ${new Date(Date.now() + tokenData.expires_in * 1000)}`); }
+            tableau.password = tokenData.access_token;
             return tokenData.access_token;
         })
         .catch(error => {
             console.error("WDC: Critical Error in getOAuthToken:", error.toString());
-            return Promise.reject(error); // Propagate the error
+            return Promise.reject(error);
         });
     }
 
@@ -125,48 +112,102 @@
     };
 
     myConnector.getSchema = function(schemaCallback) {
-        console.log("WDC: myConnector.getSchema called (PingTest version).");
-        // Define a minimal schema, as no actual data will be fetched for the table.
-        // This is just to satisfy Tableau's requirement for a schema.
+        console.log("WDC: myConnector.getSchema called (SingleDayDiscovery version).");
+        // Using a more complete schema, though we might only populate sessionID from this test.
         const pitchCols = [
-            { id: 'status', dataType: tableau.dataTypeEnum.string, alias: "Test Status" }
+            { id: 'sessionId',        dataType: tableau.dataTypeEnum.string, alias: "Session ID" },
+            { id: 'gameDateUtc',      dataType: tableau.dataTypeEnum.datetime, alias: "Game Date UTC (from session)" },
+            { id: 'sessionType',      dataType: tableau.dataTypeEnum.string, alias: "Session Type (from session)" },
+            // Add a few more placeholders if you want to see dummy data
+            { id: 'statusMessage',    dataType: tableau.dataTypeEnum.string, alias: "Status Message" }
         ];
         const tableInfoPitch = {
             id: config.schemaIdPitchData,
-            alias: `TrackMan Ping Test ${config.schemaIdPitchData.split('_')[1]}`,
+            alias: `TrackMan Single Day Discovery ${config.schemaIdPitchData.split('_')[1]}`,
             columns: pitchCols
         };
         schemaCallback([tableInfoPitch]);
     };
 
-    // MODIFIED getData for PING TEST
+    // MODIFIED getData for Single Day Session Discovery Test
     myConnector.getData = function(table, doneCallback) {
-        console.log("WDC: Basic Network Test - getData called for table:", table.tableInfo.id);
-        tableau.reportProgress("Basic Network Test: Attempting to fetch OAuth token...");
+        console.log("WDC: Single Day Discovery Test - getData called for table:", table.tableInfo.id);
+        tableau.reportProgress("Single Day Discovery Test: Attempting to fetch OAuth token...");
 
         getOAuthToken()
-            .then(freshToken => {
-                if (freshToken) {
-                    console.log("WDC: Basic Network Test - Token fetched successfully via proxy.");
-                    tableau.log("Basic Network Test: Token fetch SUCCESSFUL.");
-                    // Optionally, append a dummy row to indicate success to Tableau UI if table is shown
-                    if (table.tableInfo.id === config.schemaIdPitchData) {
-                        // table.appendRows([{ "status": "Token Ping Successful" }]);
-                        // For now, let's not append any rows to keep it simple and just see if it completes.
-                    }
-                } else {
-                    // This path should ideally not be taken if getOAuthToken properly rejects on error.
-                    console.error("WDC: Basic Network Test - Token was not returned by getOAuthToken, but no error was caught by getData's .catch(). This is unexpected.");
-                    tableau.abortWithError("Basic Network Test: Token was empty (unexpected state).");
+            .then(async freshToken => { // Added async here to use await inside
+                console.log("WDC: Single Day Discovery Test - Token fetched successfully.");
+                tableau.password = freshToken; // Ensure tableau.password is set with the fresh token
+
+                // ======= !!! IMPORTANT: SET YOUR TARGET DATE HERE !!! =======
+                // Your business partner should provide this date. Format: "YYYY-MM-DD"
+                const targetDateString = "2024-07-10"; // EXAMPLE DATE - REPLACE THIS!
+                // ======= !!! END OF TARGET DATE SETTING !!! =======
+
+                const utcDateFrom = targetDateString + "T00:00:00Z";
+                const utcDateTo = targetDateString + "T23:59:59Z";
+
+                console.log(`WDC: Attempting session discovery for single day: ${targetDateString}`);
+                tableau.reportProgress(`Discovering sessions for ${targetDateString}...`);
+
+                const sessionsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/discovery/game/sessions`);
+                let sessionsResponse;
+                try {
+                    sessionsResponse = await fetch(sessionsUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json-patch+json',
+                            'Accept': 'application/json',
+                            'Authorization': 'Bearer ' + tableau.password
+                        },
+                        body: JSON.stringify({ sessionType: 'All', utcDateFrom, utcDateTo })
+                    });
+                } catch (fetchError) {
+                    console.error(`WDC: Fetch to proxy for session discovery failed for ${targetDateString}:`, fetchError.toString());
+                    tableau.abortWithError(`Network error: Session discovery fetch failed for ${targetDateString} - ${fetchError.toString()}. Check Netlify logs.`);
+                    return;
                 }
-                doneCallback(); // End immediately after token attempt
+
+                console.log(`WDC: Session discovery proxy response status for ${targetDateString}: ${sessionsResponse.status}`);
+                if (!sessionsResponse.ok) {
+                    const errorText = await sessionsResponse.text();
+                    console.warn(`WDC: Session discovery failed (API level) for ${targetDateString}. Status: ${sessionsResponse.status}, Body: ${errorText.substring(0, 200)}`);
+                    tableau.abortWithError(`API Error: Session discovery failed for ${targetDateString} (Status ${sessionsResponse.status}): ${errorText.substring(0,100)}. Check Netlify logs for API response details.`);
+                    return;
+                }
+
+                const sessionsData = await sessionsResponse.json();
+                let actualSessions;
+                 if (sessionsData && sessionsData.body) {
+                    if (typeof sessionsData.body === 'string') {
+                        try { actualSessions = JSON.parse(sessionsData.body); }
+                        catch (e) { console.error(`WDC: Failed to parse sessionsData.body string:`, e, sessionsData.body.substring(0,300)); actualSessions = []; }
+                    } else { actualSessions = sessionsData.body; }
+                } else { actualSessions = sessionsData; }
+
+                if (actualSessions && Array.isArray(actualSessions) && actualSessions.length > 0) {
+                    console.log(`WDC: SUCCESS! Found ${actualSessions.length} sessions for ${targetDateString}:`, JSON.stringify(actualSessions).substring(0, 1000));
+                    tableau.log(`Found ${actualSessions.length} sessions for ${targetDateString}.`);
+                    // For this test, just append session IDs to see them in Tableau
+                    const rowsToAppend = actualSessions.map(sess => ({
+                        sessionId: sess.sessionId,
+                        gameDateUtc: sess.gameDateUtc, // Example field from session object
+                        sessionType: sess.sessionType, // Example field
+                        statusMessage: `Found session for ${targetDateString}`
+                    }));
+                    table.appendRows(rowsToAppend);
+                } else {
+                    console.log(`WDC: No sessions found in API response for ${targetDateString}. API Response body (parsed):`, actualSessions);
+                    tableau.log(`No sessions found for ${targetDateString}. API returned an empty list or unparsable data.`);
+                     table.appendRows([{ statusMessage: `No sessions found by API for ${targetDateString}` }]);
+                }
+                doneCallback();
             })
             .catch(error => {
-                console.error("WDC: Basic Network Test - Failed to get token:", error.toString());
-                tableau.abortWithError("Basic Network Test FAILED: Authentication error - " + error.toString() + ". Check Netlify logs for token endpoint call.");
+                console.error("WDC: Single Day Discovery Test - Error during token fetch or subsequent logic:", error.toString());
+                tableau.abortWithError("Single Day Discovery Test FAILED: " + error.toString());
             });
     };
-    // The full fetchAllDataHistorically function is intentionally omitted in this PingTest version.
 
     // Register the connector
     if (typeof tableau !== 'undefined' && tableau.makeConnector) {
@@ -184,12 +225,13 @@
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau WDC - v12-PingTest</h1>
+  <h1>TrackMan Tableau WDC - v12-SingleDayDiscovery</h1>
   <div id="error-message" style="display:none; color:red; margin:10px 0; padding:10px; border: 1px solid red;">
-    </div>
-  <p><strong>Mode:</strong> This is a Ping Test version. It only attempts to fetch an OAuth token.</p>
-  <button id="connectButton" onclick="if(typeof tableau !== 'undefined' && tableau.connectionName !== undefined) { tableau.connectionName='TrackMan API v12-PingTest'; tableau.submit(); } else { alert('This button must be run within Tableau Desktop\'s Web Data Connector interface after the WDC library has loaded.'); }">
-    Run Ping Test (Get Token)
+  </div>
+  <p><strong>Mode:</strong> Single Day Session Discovery Test. Fetches token, then tries to discover sessions for ONE specific day.</p>
+  <p style="font-weight:bold; color:orange;">IMPORTANT: Edit the `targetDateString` in the `index.html` code before testing!</p>
+  <button id="connectButton" onclick="if(typeof tableau !== 'undefined' && tableau.connectionName !== undefined) { tableau.connectionName='TrackMan API v12-SingleDayDiscovery'; tableau.submit(); } else { alert('This button must be run within Tableau Desktop\'s Web Data Connector interface.'); }">
+    Run Single Day Discovery Test
   </button>
 </body>
 </html>
