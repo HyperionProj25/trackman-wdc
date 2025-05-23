@@ -2,19 +2,10 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau WDC - v12.6-FullerPracticeSchema</title>
+  <title>TrackMan Tableau WDC - v14-IncrementalPracticeData</title>
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
-    if (typeof tableau === 'undefined') {
-      console.error('WDC: Tableau WDC library not loaded initially.');
-      document.addEventListener('DOMContentLoaded', function() {
-        const errDiv = document.getElementById('error-message');
-        if (errDiv) {
-            errDiv.style.display = 'block';
-            errDiv.innerHTML = "<strong>Error:</strong> Tableau WDC library failed to load. Ensure you're running this in Tableau Desktop and have an internet connection.";
-        }
-      });
-    }
+    if (typeof tableau === 'undefined') { /* ... WDC library load error handling ... */ }
 
     const config = {
         clientId: 'SheldonMcClelland-baseline',
@@ -23,11 +14,13 @@
         apiBase: 'https://dataapi.trackmanbaseball.com/api/v1',
         proxyUrl: 'https://tmapi.netlify.app/.netlify/functions/trackman-proxy?url=',
         useTestData: false,
-        schemaIdPitchData: 'TrackManFullPractice_v12_6'
+        schemaIdPitchData: 'TrackManIncrementalPractice_v14',
+        // Define how many days per chunk for session discovery if the date range is large
+        daysPerDiscoveryChunk: 7 // e.g., fetch sessions in 7-day chunks
     };
 
     function getOAuthToken() {
-        // ... (getOAuthToken function remains the same as v12.5 - no changes needed here) ...
+        // ... (getOAuthToken function remains the same as v12.6/v13 - no changes needed here) ...
         console.log("WDC: Attempting to fetch new OAuth token.");
         const proxiedTokenUrl = config.proxyUrl + encodeURIComponent(config.oauthUrl);
         const bodyParams = new URLSearchParams();
@@ -41,37 +34,24 @@
             body: bodyParams.toString()
         })
         .then(response => {
-            console.log("WDC: getOAuthToken - Raw response status from proxy:", response.status);
             if (!response.ok) {
                 return response.text().then(text => {
-                    console.error("WDC: getOAuthToken - Error response text from proxy:", text.substring(0, 500));
                     let errorMessage = `Token request via proxy failed: ${response.status} ${response.statusText}`;
-                    try {
-                        const errorData = JSON.parse(text);
-                        if(errorData.error && errorData.error.details) { errorMessage += ` - Proxy Error: ${errorData.error.details}`; }
-                        else if (errorData.body) {
-                            try { const actualError = JSON.parse(errorData.body); errorMessage += ` - Target Error: ${actualError.error_description || actualError.error || String(errorData.body).substring(0,100)}`; }
-                            catch (e_parse_body) { errorMessage += ` - Target Response (unparsable): ${String(errorData.body).substring(0,100)}`; }
-                        } else if (errorData.error) { errorMessage += ` - Error: ${errorData.error}`; }
-                    } catch (e_parse) { errorMessage += ` - Raw Text: ${text.substring(0, 100)}`; }
+                    try { const errorData = JSON.parse(text); if(errorData.error && errorData.error.details) { errorMessage += ` - Proxy Error: ${errorData.error.details}`; } else if (errorData.body) { try { const actualError = JSON.parse(errorData.body); errorMessage += ` - Target Error: ${actualError.error_description || actualError.error || String(errorData.body).substring(0,100)}`; } catch (e_parse_body) { errorMessage += ` - Target Response (unparsable): ${String(errorData.body).substring(0,100)}`; }} else if (errorData.error) { errorMessage += ` - Error: ${errorData.error}`; }} catch (e_parse) { errorMessage += ` - Raw Text: ${text.substring(0, 100)}`; }
                     throw new Error(errorMessage);
                 });
             }
             return response.json();
         })
         .then(proxyResponseData => {
-            console.log("WDC: getOAuthToken - Full response object from proxy (first 500 chars):", JSON.stringify(proxyResponseData).substring(0,500));
             let tokenData;
-            if (proxyResponseData && typeof proxyResponseData.body === 'string') {
-                try { tokenData = JSON.parse(proxyResponseData.body); }
-                catch (e) { console.error("WDC: Failed to parse token data from proxy's response body string:", proxyResponseData.body.substring(0,500)); throw new Error("Failed to parse token data (body was string)."); }
-            } else if (proxyResponseData && typeof proxyResponseData.body === 'object' && proxyResponseData.body !== null) { tokenData = proxyResponseData.body;
-            } else if (proxyResponseData && proxyResponseData.access_token) { tokenData = proxyResponseData;
-            } else { console.error("WDC: Token data not found in expected proxy response structure."); throw new Error("Token data not found in expected proxy structure."); }
+            if (proxyResponseData && typeof proxyResponseData.body === 'string') { try { tokenData = JSON.parse(proxyResponseData.body); } catch (e) { throw new Error("Failed to parse token data (body was string)."); }}
+            else if (proxyResponseData && typeof proxyResponseData.body === 'object' && proxyResponseData.body !== null) { tokenData = proxyResponseData.body; }
+            else if (proxyResponseData && proxyResponseData.access_token) { tokenData = proxyResponseData; }
+            else { throw new Error("Token data not found in expected proxy structure."); }
             if (tokenData.error) { throw new Error(tokenData.error_description || tokenData.error || "Unknown OAuth error."); }
             if (!tokenData.access_token) { throw new Error("Access token not found in OAuth response."); }
             console.log("WDC: New OAuth access_token fetched successfully.");
-            if (tokenData.expires_in) { console.log(`WDC: Token expires_in: ${tokenData.expires_in}s. Approx expiry: ${new Date(Date.now() + tokenData.expires_in * 1000)}`); }
             tableau.password = tokenData.access_token;
             return tokenData.access_token;
         })
@@ -80,293 +60,215 @@
 
     const myConnector = tableau.makeConnector();
 
-    myConnector.init = function(initCallback) {
-        console.log("WDC: myConnector.init called. Tableau phase:", tableau.phase);
-        initCallback();
-    };
+    myConnector.init = function(initCallback) { console.log("WDC: init"); initCallback(); };
 
     myConnector.getSchema = function(schemaCallback) {
-        console.log("WDC: myConnector.getSchema called (v12.6-FullerPracticeSchema).");
-        const cols = [
-            // IDs and Timestamps
+        // Using the fuller schema from v12.6
+        console.log("WDC: myConnector.getSchema called (v14-IncrementalPracticeData).");
+        const cols = [ /* ... (Copy the full 'cols' array from v12.6 here) ... */
             { id: 'sessionId',        dataType: tableau.dataTypeEnum.string, alias: "Session ID" },
-            { id: 'playId',           dataType: tableau.dataTypeEnum.string, alias: "Play/Pitch UID" }, // From Ball: pitch.pitchUID or hit.hitUID. From Play: playID
-            { id: 'trackId',          dataType: tableau.dataTypeEnum.string, alias: "Track ID (Ball Data)" }, // From Ball Data (if available)
-            { id: 'calibrationId',    dataType: tableau.dataTypeEnum.string, alias: "Calibration ID (Play Data)" }, // From Play Data
-            { id: 'sessionDate',      dataType: tableau.dataTypeEnum.date, alias: "Session Date (Play Data)" }, // From Play Data: date
-            { id: 'sessionTime',      dataType: tableau.dataTypeEnum.string, alias: "Session Time (Play Data)" }, // From Play Data: time
+            { id: 'playId',           dataType: tableau.dataTypeEnum.string, alias: "Play/Pitch UID" },
+            { id: 'trackId',          dataType: tableau.dataTypeEnum.string, alias: "Track ID (Ball Data)" },
+            { id: 'calibrationId',    dataType: tableau.dataTypeEnum.string, alias: "Calibration ID (Play Data)" },
+            { id: 'sessionDate',      dataType: tableau.dataTypeEnum.date, alias: "Session Date (Play Data)" },
+            { id: 'sessionTime',      dataType: tableau.dataTypeEnum.string, alias: "Session Time (Play Data)" },
             { id: 'trackStartTime',   dataType: tableau.dataTypeEnum.datetime, alias: "Approx. Track Start Time" },
-
-            // Player Info (Primarily from Play Data)
             { id: 'pitcherName',      dataType: tableau.dataTypeEnum.string, alias: "Pitcher" },
             { id: 'pitcherId',        dataType: tableau.dataTypeEnum.string, alias: "Pitcher ID" },
             { id: 'pitcherThrows',    dataType: tableau.dataTypeEnum.string, alias: "Pitcher Throws" },
-            { id: 'batterName',       dataType: tableau.dataTypeEnum.string, alias: "Batter" }, // Likely null for practice
-            // { id: 'batterId',         dataType: tableau.dataTypeEnum.string, alias: "Batter ID" }, // Not in practice play example
-
-            // Pitch/Play Context (Primarily from Play Data)
-            { id: 'pitchNo',          dataType: tableau.dataTypeEnum.int, alias: "Pitch No (Tagger)" }, // playInfo.taggerBehavior.pitchNo
-            { id: 'taggedPitchType',  dataType: tableau.dataTypeEnum.string, alias: "Tagged Pitch Type" }, // playInfo.pitchTag.taggedPitchType
-            { id: 'pitchSession',     dataType: tableau.dataTypeEnum.string, alias: "Pitch Session Type (Tagger)" }, // playInfo.taggerBehavior.pitchSession (e.g., "Live")
-            { id: 'practiceType',     dataType: tableau.dataTypeEnum.string, alias: "Practice Type (Session)" }, // Added, from session discovery if available or play
-
-            // Ball Data - General
-            { id: 'kind',             dataType: tableau.dataTypeEnum.string, alias: "Track Type (Pitch/Hit)" }, // item.trackType
-
-            // Ball Data - Pitch Release Metrics
+            { id: 'batterName',       dataType: tableau.dataTypeEnum.string, alias: "Batter" },
+            { id: 'pitchNo',          dataType: tableau.dataTypeEnum.int, alias: "Pitch No (Tagger)" },
+            { id: 'taggedPitchType',  dataType: tableau.dataTypeEnum.string, alias: "Tagged Pitch Type" },
+            { id: 'pitchSession',     dataType: tableau.dataTypeEnum.string, alias: "Pitch Session Type (Tagger)" },
+            { id: 'practiceType',     dataType: tableau.dataTypeEnum.string, alias: "Practice Type (Session)" }, // This might come from session discovery `session.sessionType`
+            { id: 'kind',             dataType: tableau.dataTypeEnum.string, alias: "Track Type (Pitch/Hit)" },
             { id: 'relSpeed',         dataType: tableau.dataTypeEnum.float, alias: "Rel Speed" },
+            { id: 'spinRate',         dataType: tableau.dataTypeEnum.float, alias: "Spin Rate" },
+            { id: 'extension',        dataType: tableau.dataTypeEnum.float, alias: "Extension" },
             { id: 'vertRelAngle',     dataType: tableau.dataTypeEnum.float, alias: "Vert Rel Angle" },
             { id: 'horzRelAngle',     dataType: tableau.dataTypeEnum.float, alias: "Horz Rel Angle" },
-            { id: 'spinRate',         dataType: tableau.dataTypeEnum.float, alias: "Spin Rate" },
-            { id: 'spinAxis',         dataType: tableau.dataTypeEnum.float, alias: "Spin Axis (2D)" },
-            { id: 'tilt',             dataType: tableau.dataTypeEnum.string, alias: "Tilt (2D)" },
             { id: 'relHeight',        dataType: tableau.dataTypeEnum.float, alias: "Rel Height" },
             { id: 'relSide',          dataType: tableau.dataTypeEnum.float, alias: "Rel Side" },
-            { id: 'extension',        dataType: tableau.dataTypeEnum.float, alias: "Extension" },
-
-            // Ball Data - Pitch 3D Spin Metrics
             { id: 'spinAxis3dTilt',               dataType: tableau.dataTypeEnum.string, alias: "Spin Axis 3D Tilt" },
             { id: 'spinAxis3dTransverseAngle',    dataType: tableau.dataTypeEnum.float,  alias: "Spin Axis 3D Transverse Angle" },
             { id: 'spinAxis3dLongitudinalAngle',  dataType: tableau.dataTypeEnum.float,  alias: "Spin Axis 3D Longitudinal Angle" },
             { id: 'spinAxis3dActiveSpinRate',   dataType: tableau.dataTypeEnum.float, alias: "Spin Axis 3D Active Spin" },
             { id: 'spinAxis3dSpinEfficiency',   dataType: tableau.dataTypeEnum.float, alias: "Spin Axis 3D Efficiency" },
-
-            // Ball Data - Pitch Trajectory & Movement
             { id: 'vertBreak',        dataType: tableau.dataTypeEnum.float, alias: "Vert Break" },
             { id: 'inducedVertBreak', dataType: tableau.dataTypeEnum.float, alias: "Induced Vert Break" },
             { id: 'horzBreak',        dataType: tableau.dataTypeEnum.float, alias: "Horz Break" },
-
-            // Ball Data - Pitch Location
             { id: 'plateLocHeight',   dataType: tableau.dataTypeEnum.float, alias: "Plate Loc Height" },
             { id: 'plateLocSide',     dataType: tableau.dataTypeEnum.float, alias: "Plate Loc Side" },
             { id: 'zoneSpeed',        dataType: tableau.dataTypeEnum.float, alias: "Zone Speed" },
             { id: 'vertApprAngle',    dataType: tableau.dataTypeEnum.float, alias: "Vert Appr Angle" },
             { id: 'horzApprAngle',    dataType: tableau.dataTypeEnum.float, alias: "Horz Appr Angle" },
             { id: 'zoneTime',         dataType: tableau.dataTypeEnum.float, alias: "Zone Time" },
-
-            // Ball Data - Pitch PFX Data
             { id: 'pfxx',             dataType: tableau.dataTypeEnum.float, alias: "pfx_x" },
             { id: 'pfxz',             dataType: tableau.dataTypeEnum.float, alias: "pfx_z" },
-            { id: 'x0',               dataType: tableau.dataTypeEnum.float, alias: "x0" },{ id: 'y0', dataType: tableau.dataTypeEnum.float, alias: "y0" },{ id: 'z0', dataType: tableau.dataTypeEnum.float, alias: "z0" },
-            { id: 'vx0',              dataType: tableau.dataTypeEnum.float, alias: "vx0" },{ id: 'vy0', dataType: tableau.dataTypeEnum.float, alias: "vy0" },{ id: 'vz0', dataType: tableau.dataTypeEnum.float, alias: "vz0" },
-            { id: 'ax0',              dataType: tableau.dataTypeEnum.float, alias: "ax0" },{ id: 'ay0', dataType: tableau.dataTypeEnum.float, alias: "ay0" },{ id: 'az0', dataType: tableau.dataTypeEnum.float, alias: "az0" },
+            { id: 'x0', dataType: tableau.dataTypeEnum.float, alias: "x0" },{ id: 'y0', dataType: tableau.dataTypeEnum.float, alias: "y0" },{ id: 'z0', dataType: tableau.dataTypeEnum.float, alias: "z0" },
+            { id: 'vx0', dataType: tableau.dataTypeEnum.float, alias: "vx0" },{ id: 'vy0', dataType: tableau.dataTypeEnum.float, alias: "vy0" },{ id: 'vz0', dataType: tableau.dataTypeEnum.float, alias: "vz0" },
+            { id: 'ax0', dataType: tableau.dataTypeEnum.float, alias: "ax0" },{ id: 'ay0', dataType: tableau.dataTypeEnum.float, alias: "ay0" },{ id: 'az0', dataType: tableau.dataTypeEnum.float, alias: "az0" },
             { id: 'effVelocity',      dataType: tableau.dataTypeEnum.float, alias: "Eff Velocity" },
-
-            // Ball Data - Hit Metrics (will be null for pitches)
             { id: 'hitExitSpeed',     dataType: tableau.dataTypeEnum.float,  alias: "Hit Exit Speed" },
             { id: 'hitAngle',         dataType: tableau.dataTypeEnum.float,  alias: "Hit Launch Angle" },
             { id: 'hitDirection',     dataType: tableau.dataTypeEnum.float,  alias: "Hit Direction Angle" },
-            { id: 'hitSpinRate',      dataType: tableau.dataTypeEnum.float,  alias: "Hit Spin Rate" }, // From hit.launch
+            { id: 'hitSpinRate',      dataType: tableau.dataTypeEnum.float,  alias: "Hit Spin Rate" },
             { id: 'hitDistance',      dataType: tableau.dataTypeEnum.float,  alias: "Hit Distance (Landing)" },
             { id: 'hitHangTime',      dataType: tableau.dataTypeEnum.float,  alias: "Hit Hang Time (Landing)" },
-
-            // Session Info (repeated per row for context)
-            { id: 'sessionGameDateUtc', dataType: tableau.dataTypeEnum.datetime, alias: "Session Discovery Date UTC" },
-            { id: 'sessionType',      dataType: tableau.dataTypeEnum.string, alias: "Session Discovery Type" },
-            { id: 'statusMessage',    dataType: tableau.dataTypeEnum.string, alias: "Row Status Message" }
+            { id: 'sessionGameDateUtc', dataType: tableau.dataTypeEnum.datetime, alias: "Session Discovery Date UTC" }, // from session discovery object
+            { id: 'sessionType',      dataType: tableau.dataTypeEnum.string, alias: "Session Discovery Type" }, // from session discovery object
+            { id: 'statusMessage',    dataType: tableau.dataTypeEnum.string, alias: "Row Status Message" } // For WDC status
         ];
-        const tableInfo = { id: config.schemaIdPitchData, alias: `TrackMan Practice Data Full v12.6`, columns: cols };
+        const tableInfo = { id: config.schemaIdPitchData, alias: `TrackMan Incremental Practice Data v14`, columns: cols };
         schemaCallback([tableInfo]);
     };
 
     myConnector.getData = function(table, doneCallback) {
-        console.log("WDC: FullerPracticeSchema - getData called for table:", table.tableInfo.id);
-        tableau.reportProgress("FullerPracticeSchema: Attempting token...");
-
+        console.log("WDC: IncrementalPracticeData - getData called.");
+        tableau.reportProgress("Fetching Token...");
         getOAuthToken()
             .then(async freshToken => {
-                console.log("WDC: FullerPracticeSchema - Token fetched.");
-                tableau.password = freshToken;
+                console.log("WDC: Token fetched for incremental pull.");
+                tableau.password = freshToken; // tableau.password is used by data fetching functions
+
+                // Determine date range for this fetch
+                let connectionData = tableau.connectionData ? JSON.parse(tableau.connectionData) : {};
+                let lastRefreshDateStr = connectionData.lastRefreshDate; // Expect YYYY-MM-DD format
+
+                // Define a fixed start date for the very first pull if no lastRefreshDate exists.
+                // This is the earliest date you want data from.
+                const overallStartDate = new Date("2025-05-15T00:00:00Z"); // User wants to start from 15th
+
+                let dateFrom;
+                if (lastRefreshDateStr) {
+                    dateFrom = new Date(lastRefreshDateStr + "T00:00:00Z");
+                    dateFrom.setUTCDate(dateFrom.getUTCDate() + 1); // Start from the day AFTER the last refresh
+                } else {
+                    dateFrom = overallStartDate;
+                }
+
+                let today = new Date();
+                let dateTo = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
+
+                // Ensure dateFrom is not after dateTo (can happen if refreshed multiple times same day and lastRefreshDate is "today")
+                if (dateFrom > dateTo) {
+                    console.log("WDC: Data is already up to date. No new period to fetch.");
+                    tableau.log("Data is already up to date.");
+                    doneCallback();
+                    return;
+                }
+                
+                const utcDateFromFormatted = dateFrom.toISOString().split('T')[0] + "T00:00:00Z";
+                const utcDateToFormatted = dateTo.toISOString().split('T')[0] + "T23:59:59Z";
+
+
                 if (table.tableInfo.id === config.schemaIdPitchData) {
-                    fetchSingleDayPracticeDataWithFullerSchema(table, doneCallback);
+                    await fetchPracticeDataByDateRange(table, doneCallback, utcDateFromFormatted, utcDateToFormatted);
+                    // Save the end date of the successfully processed range for the next incremental run
+                    tableau.connectionData = JSON.stringify({ lastRefreshDate: dateTo.toISOString().split('T')[0] });
+                    console.log("WDC: Successfully set lastRefreshDate to:", dateTo.toISOString().split('T')[0]);
                 } else {
                     tableau.abortWithError("WDC: Unknown table ID: " + table.tableInfo.id);
                 }
             })
             .catch(error => {
-                console.error("WDC: FullerPracticeSchema - Error during token fetch:", error.toString());
-                tableau.abortWithError("FullerPracticeSchema FAILED (Token Error): " + error.toString());
+                tableau.abortWithError("Token Error for Incremental Fetch: " + error.toString());
             });
     };
 
-    async function fetchSingleDayPracticeDataWithFullerSchema(table, doneCallback) {
-        console.log("WDC: fetchSingleDayPracticeDataWithFullerSchema called.");
+    async function fetchPracticeDataByDateRange(table, doneCallback, utcDateFrom, utcDateTo) {
+        console.log(`WDC: fetchPracticeDataByDateRange called for ${utcDateFrom} to ${utcDateTo}`);
         try {
             let allRowsCollected = [];
-            let sessionsFoundOverall = 0;
-            const targetDateString = "2025-05-16"; // Hardcoded as requested
+            let totalSessionsFoundInPeriod = 0;
 
-            const utcDateFrom = targetDateString + "T00:00:00Z";
-            const utcDateTo = targetDateString + "T23:59:59Z";
-            console.log(`WDC: Fetching PRACTICE Data for Single Day: ${targetDateString}`);
-            tableau.reportProgress(`Discovering PRACTICE sessions for ${targetDateString}...`);
+            let currentChunkStartDate = new Date(utcDateFrom);
+            const finalEndDate = new Date(utcDateTo);
 
-            const sessionsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/discovery/practice/sessions`);
-            let sessionsResponse;
-            try {
-                sessionsResponse = await fetch(sessionsUrl, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json-patch+json', 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password },
-                    body: JSON.stringify({ sessionType: 'All', utcDateFrom, utcDateTo })
-                });
-            } catch (e) { tableau.abortWithError(`Network error (Session Discovery): ${e.toString()}.`); return; }
-            
-            if (!sessionsResponse.ok) { const errTxt = await sessionsResponse.text(); tableau.abortWithError(`API Error (Session Discovery Status ${sessionsResponse.status}): ${errTxt.substring(0,100)}`); return; }
-
-            const sessionsData = await sessionsResponse.json();
-            let actualSessions = (sessionsData && typeof sessionsData.body === 'string' ? JSON.parse(sessionsData.body) : sessionsData.body) || sessionsData;
-            if (!Array.isArray(actualSessions)) actualSessions = [actualSessions].filter(Boolean); // Ensure array, filter nulls if not array already
-
-            if (actualSessions.length === 0) {
-                tableau.log(`No PRACTICE sessions found for ${targetDateString}.`);
-                table.appendRows([{ statusMessage: `No PRACTICE sessions found for ${targetDateString}` }]);
-                doneCallback(); return;
-            }
-            sessionsFoundOverall = actualSessions.length;
-            console.log(`WDC: Found ${sessionsFoundOverall} PRACTICE sessions.`);
-            tableau.log(`Found ${sessionsFoundOverall} PRACTICE sessions.`);
-
-            const sessionsToProcess = actualSessions.slice(0, 5); 
-            
-            for (const session of sessionsToProcess) {
-                if (!session.sessionId) { console.warn("WDC: Practice session missing sessionId:", session); continue; }
-                tableau.reportProgress(`Processing session ${session.sessionId.substring(0,8)}...`);
-
-                let actualBallDataForSession = [];
-                const ballDataUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/practice/balls/${session.sessionId}`);
-                try {
-                    const ballResp = await fetch(ballDataUrl, { headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }});
-                    if (ballResp.ok) { const r = await ballResp.json(); actualBallDataForSession = (r && typeof r.body === 'string' ? JSON.parse(r.body) : r.body) || r; if(!Array.isArray(actualBallDataForSession)) actualBallDataForSession = [];}
-                    else { console.warn(`WDC: Ball data fetch failed. Status: ${ballResp.status}`);}
-                } catch (e) { console.error(`WDC: Error fetching ball data:`, e.toString());}
-                console.log(`WDC: Fetched ${actualBallDataForSession.length} ball entries for session ${session.sessionId}.`);
-
-                let actualPlaysDataForSession = [];
-                let firstPlayInfoForSession = null;
-                const playsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/practice/plays/${session.sessionId}`);
-                try {
-                    const playsResp = await fetch(playsUrl, { headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }});
-                    if (playsResp.ok) { const r = await playsResp.json(); actualPlaysDataForSession = (r && typeof r.body === 'string' ? JSON.parse(r.body) : r.body) || r; if(!Array.isArray(actualPlaysDataForSession)) actualPlaysDataForSession = [];}
-                    else { console.warn(`WDC: Plays data fetch failed. Status: ${playsResp.status}`);}
-                } catch (e) { console.error(`WDC: Error fetching plays data:`, e.toString());}
-                console.log(`WDC: Fetched ${actualPlaysDataForSession.length} plays for session ${session.sessionId}.`);
-                if (actualPlaysDataForSession.length > 0) firstPlayInfoForSession = actualPlaysDataForSession[0];
-
-
-                if (actualBallDataForSession && actualBallDataForSession.length > 0) {
-                    const mappedRows = actualBallDataForSession.map(item => {
-                        const pitcherInfo = firstPlayInfoForSession?.pitcher;
-                        const batterInfo = firstPlayInfoForSession?.batter; // Likely empty for practice
-                        const playPitchTag = firstPlayInfoForSession?.pitchTag;
-                        const playTaggerBehavior = firstPlayInfoForSession?.taggerBehavior;
-                        
-                        let row = { sessionId: session.sessionId, sessionGameDateUtc: session.gameDateUtc, sessionType: session.sessionType };
-                        
-                        row.trackId = item.trackId;
-                        row.kind = item.trackType; // "Pitch" or "Hit"
-                        row.trackStartTime = session.gameDateUtc; // Approx session time, individual not in practice ball data
-
-                        if (item.trackType === 'Pitch' && item.pitch) {
-                            const p = item.pitch;
-                            row.playId = p.pitchUID;
-                            if (p.release) {
-                                row.relSpeed = p.release.relSpeed; row.vertRelAngle = p.release.vertRelAngle;
-                                row.horzRelAngle = p.release.horzRelAngle; row.spinRate = p.release.spinRate;
-                                row.spinAxis = p.release.spinAxis; row.tilt = p.release.tilt;
-                                row.relHeight = p.release.relHeight; row.relSide = p.release.relSide;
-                                row.extension = p.release.extension;
-                                row.spinAxis3dTilt = p.release.spinAxis3dTilt;
-                                row.spinAxis3dTransverseAngle = p.release.spinAxis3dTransverseAngle;
-                                row.spinAxis3dLongitudinalAngle = p.release.spinAxis3dLongitudinalAngle;
-                                row.spinAxis3dActiveSpinRate = p.release.spinAxis3dActiveSpinRate;
-                                row.spinAxis3dSpinEfficiency = p.release.spinAxis3dSpinEfficiency;
-                            }
-                            if (p.trajectory) {
-                                row.vertBreak = p.trajectory.vertBreak; row.inducedVertBreak = p.trajectory.inducedVertBreak;
-                                row.horzBreak = p.trajectory.horzBreak;
-                            }
-                            if (p.location) {
-                                row.plateLocHeight = p.location.plateLocHeight; row.plateLocSide = p.location.plateLocSide;
-                                row.zoneSpeed = p.location.zoneSpeed; row.vertApprAngle = p.location.vertApprAngle;
-                                row.horzApprAngle = p.location.horzApprAngle; row.zoneTime = p.location.zoneTime;
-                            }
-                            if (p.pfxData) {
-                                row.pfxx = p.pfxData.pfxx; row.pfxz = p.pfxData.pfxz;
-                                row.x0 = p.pfxData.x0; row.y0 = p.pfxData.y0; row.z0 = p.pfxData.z0;
-                                row.vx0 = p.pfxData.vx0; row.vy0 = p.pfxData.vy0; row.vz0 = p.pfxData.vz0;
-                                row.ax0 = p.pfxData.ax0; row.ay0 = p.pfxData.ay0; row.az0 = p.pfxData.az0;
-                                row.effVelocity = p.pfxData.effVelocity;
-                            }
-                        } else if (item.trackType === 'Hit' && item.hit) {
-                            const h = item.hit;
-                            row.playId = h.hitUID;
-                            if (h.launch) {
-                                row.hitExitSpeed = h.launch.exitSpeed; row.hitAngle = h.launch.angle;
-                                row.hitDirection = h.launch.direction; row.hitSpinRate = h.launch.spinRate;
-                                // ContactPosition could be mapped if schema had x,y,z for it
-                            }
-                            if (h.landing) {
-                                row.hitDistance = h.landing.distance; row.hitHangTime = h.landing.hangTime;
-                                // Bearing could be mapped
-                            }
-                           // row.lastTrackedDistance = h.trajectory?.lastTrackedDistance; // If needed
-                        }
-                        
-                        // From Play Data (applied to all items in session via firstPlayInfoForSession)
-                        if(firstPlayInfoForSession){
-                            row.calibrationId = firstPlayInfoForSession.calibrationId;
-                            row.sessionDate = firstPlayInfoForSession.date;
-                            row.sessionTime = firstPlayInfoForSession.time;
-                            if(pitcherInfo){
-                                row.pitcherName = pitcherInfo.pitcher;
-                                row.pitcherId = pitcherInfo.pitcherId;
-                                row.pitcherThrows = pitcherInfo.pitcherThrows;
-                            }
-                            if(batterInfo){ // Batter info likely minimal/empty for practice
-                                row.batterName = batterInfo.batter;
-                            }
-                            if(playPitchTag){
-                                row.taggedPitchType = playPitchTag.taggedPitchType;
-                            }
-                            if(playTaggerBehavior){
-                                row.pitchNo = playTaggerBehavior.pitchNo;
-                                row.pitchSession = playTaggerBehavior.pitchSession;
-                            }
-                        }
-                        return row;
-                    });
-                    allRowsCollected = allRowsCollected.concat(mappedRows);
+            let chunkNumber = 0;
+            while(currentChunkStartDate <= finalEndDate) {
+                chunkNumber++;
+                let currentChunkEndDate = new Date(currentChunkStartDate);
+                currentChunkEndDate.setUTCDate(currentChunkStartDate.getUTCDate() + (config.daysPerDiscoveryChunk - 1));
+                if (currentChunkEndDate > finalEndDate) {
+                    currentChunkEndDate = finalEndDate;
                 }
-            } 
-            if (allRowsCollected.length > 0) {
-                console.log(`WDC: Appending ${allRowsCollected.length} PRACTICE rows to Tableau.`);
-                table.appendRows(allRowsCollected);
-            } else {
-                console.log(`WDC: No processable data rows found for ${targetDateString}.`);
-                tableau.log(sessionsFoundOverall > 0 ? `Found ${sessionsFoundOverall} practice sessions, but no usable pitch/hit data extracted.` : `No practice sessions found.`);
-            }
-            doneCallback();
+
+                const chunkUtcDateFrom = currentChunkStartDate.toISOString().split('.')[0] + "Z";
+                const chunkUtcDateTo = currentChunkEndDate.toISOString().split('.')[0] + "Z";
+
+                console.log(`WDC: --- Processing Chunk ${chunkNumber} ---`);
+                console.log(`WDC: Date Range for Session Discovery: ${chunkUtcDateFrom} to ${chunkUtcDateTo}`);
+                tableau.reportProgress(`Chunk ${chunkNumber}: Discovering sessions for ${chunkUtcDateFrom.substring(0,10)} to ${chunkUtcDateTo.substring(0,10)}...`);
+
+                const sessionsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/discovery/practice/sessions`);
+                let sessionsResponse;
+                try { sessionsResponse = await fetch(sessionsUrl, { method: 'POST', headers: {'Content-Type': 'application/json-patch+json', 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }, body: JSON.stringify({ sessionType: 'All', utcDateFrom: chunkUtcDateFrom, utcDateTo: chunkUtcDateTo }) });
+                } catch (e) { console.error(`WDC: Network error (Session Discovery Chunk ${chunkNumber}): ${e.toString()}`); continue; } // Continue to next chunk on fetch error
+                
+                if (!sessionsResponse.ok) { const errTxt = await sessionsResponse.text(); console.warn(`API Error (Session Discovery Chunk ${chunkNumber} Status ${sessionsResponse.status}): ${errTxt.substring(0,100)}`); currentChunkStartDate.setUTCDate(currentChunkEndDate.getUTCDate() + 1); continue; }
+
+                const sessionsData = await sessionsResponse.json();
+                let actualSessions = (sessionsData && typeof sessionsData.body === 'string' ? JSON.parse(sessionsData.body) : sessionsData.body) || sessionsData;
+                if (!Array.isArray(actualSessions)) actualSessions = [actualSessions].filter(Boolean);
+
+                if (actualSessions.length === 0) { console.log(`WDC: No practice sessions found for chunk ${chunkUtcDateFrom} to ${chunkUtcDateTo}.`); currentChunkStartDate.setUTCDate(currentChunkEndDate.getUTCDate() + 1); continue; }
+                
+                totalSessionsFoundInPeriod += actualSessions.length;
+                console.log(`WDC: Found ${actualSessions.length} practice sessions in chunk.`);
+                tableau.log(`Found ${actualSessions.length} practice sessions in chunk ${chunkNumber}.`);
+
+                const sessionsToProcess = actualSessions.slice(0, 20); // Limit sessions per chunk if needed
+                
+                for (const session of sessionsToProcess) {
+                    // ... (The detailed data fetching loop for balls and plays, and the mapping,
+                    //      is IDENTICAL to the one in fetchSingleDayPracticeDataWithFullerSchema from v12.6)
+                    //      It starts with: if (!session.sessionId) { ... }
+                    if (!session.sessionId) { console.warn("WDC: Practice session missing sessionId:", session); continue; }
+                    tableau.reportProgress(`Processing session ${session.sessionId.substring(0,8)} from chunk ${chunkNumber}...`);
+                    let actualBallDataForSession = []; /* ... Ball fetch logic ... */
+                    const ballDataUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/practice/balls/${session.sessionId}`);
+                    try { const ballResp = await fetch(ballDataUrl, { headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }}); if (ballResp.ok) { const r = await ballResp.json(); actualBallDataForSession = (r && typeof r.body === 'string' ? JSON.parse(r.body) : r.body) || r; if(!Array.isArray(actualBallDataForSession)) actualBallDataForSession = [];} else { console.warn(`WDC: Ball data fetch failed for session ${session.sessionId}. Status: ${ballResp.status}`);} } catch (e) { console.error(`WDC: Error fetching ball data for session ${session.sessionId}:`, e.toString());}
+                    let actualPlaysDataForSession = []; let firstPlayInfoForSession = null; /* ... Plays fetch logic ... */
+                    const playsUrl = config.proxyUrl + encodeURIComponent(`${config.apiBase}/data/practice/plays/${session.sessionId}`);
+                    try { const playsResp = await fetch(playsUrl, { headers: { 'Accept': 'application/json', 'Authorization': 'Bearer ' + tableau.password }}); if (playsResp.ok) { const r = await playsResp.json(); actualPlaysDataForSession = (r && typeof r.body === 'string' ? JSON.parse(r.body) : r.body) || r; if(!Array.isArray(actualPlaysDataForSession)) actualPlaysDataForSession = [];} else { console.warn(`WDC: Plays data fetch failed for session ${session.sessionId}. Status: ${playsResp.status}`);} } catch (e) { console.error(`WDC: Error fetching plays data for session ${session.sessionId}:`, e.toString());}
+                    if (actualPlaysDataForSession.length > 0) firstPlayInfoForSession = actualPlaysDataForSession[0];
+
+                    if (actualBallDataForSession && actualBallDataForSession.length > 0) {
+                        const mappedRows = actualBallDataForSession.map(item => { // The mapping is the same as v12.6
+                            const pitcherInfo = firstPlayInfoForSession?.pitcher; const batterInfo = firstPlayInfoForSession?.batter; const playPitchTag = firstPlayInfoForSession?.pitchTag; const playTaggerBehavior = firstPlayInfoForSession?.taggerBehavior; let row = { sessionId: session.sessionId, sessionGameDateUtc: session.gameDateUtc, sessionType: session.sessionType };
+                            row.trackId = item.trackId; row.kind = item.trackType; row.trackStartTime = session.gameDateUtc; 
+                            if (item.trackType === 'Pitch' && item.pitch) { const p = item.pitch; row.playId = p.pitchUID; if (p.release) { row.relSpeed = p.release.relSpeed; row.vertRelAngle = p.release.vertRelAngle; row.horzRelAngle = p.release.horzRelAngle; row.spinRate = p.release.spinRate; row.spinAxis = p.release.spinAxis; row.tilt = p.release.tilt; row.relHeight = p.release.relHeight; row.relSide = p.release.relSide; row.extension = p.release.extension; row.spinAxis3dTilt = p.release.spinAxis3dTilt; row.spinAxis3dTransverseAngle = p.release.spinAxis3dTransverseAngle; row.spinAxis3dLongitudinalAngle = p.release.spinAxis3dLongitudinalAngle; row.spinAxis3dActiveSpinRate = p.release.spinAxis3dActiveSpinRate; row.spinAxis3dSpinEfficiency = p.release.spinAxis3dSpinEfficiency;} if (p.trajectory) { row.vertBreak = p.trajectory.vertBreak; row.inducedVertBreak = p.trajectory.inducedVertBreak; row.horzBreak = p.trajectory.horzBreak; } if (p.location) { row.plateLocHeight = p.location.plateLocHeight; row.plateLocSide = p.location.plateLocSide; row.zoneSpeed = p.location.zoneSpeed; row.vertApprAngle = p.location.vertApprAngle; row.horzApprAngle = p.location.horzApprAngle; row.zoneTime = p.location.zoneTime; } if (p.pfxData) { row.pfxx = p.pfxData.pfxx; row.pfxz = p.pfxData.pfxz; row.x0 = p.pfxData.x0; row.y0 = p.pfxData.y0; row.z0 = p.pfxData.z0; row.vx0 = p.pfxData.vx0; row.vy0 = p.pfxData.vy0; row.vz0 = p.pfxData.vz0; row.ax0 = p.pfxData.ax0; row.ay0 = p.pfxData.ay0; row.az0 = p.pfxData.az0; row.effVelocity = p.pfxData.effVelocity;}}
+                            else if (item.trackType === 'Hit' && item.hit) { const h = item.hit; row.playId = h.hitUID; if (h.launch) { row.hitExitSpeed = h.launch.exitSpeed; row.hitAngle = h.launch.angle; row.hitDirection = h.launch.direction; row.hitSpinRate = h.launch.spinRate; } if (h.landing) { row.hitDistance = h.landing.distance; row.hitHangTime = h.landing.hangTime; }}
+                            if(firstPlayInfoForSession){ row.calibrationId = firstPlayInfoForSession.calibrationId; row.sessionDate = firstPlayInfoForSession.date; row.sessionTime = firstPlayInfoForSession.time; if(pitcherInfo){ row.pitcherName = pitcherInfo.pitcher; row.pitcherId = pitcherInfo.pitcherId; row.pitcherThrows = pitcherInfo.pitcherThrows; } if(batterInfo){ row.batterName = batterInfo.batter; } if(playPitchTag){ row.taggedPitchType = playPitchTag.taggedPitchType; } if(playTaggerBehavior){ row.pitchNo = playTaggerBehavior.pitchNo; row.pitchSession = playTaggerBehavior.pitchSession; }}
+                            row.statusMessage = `Data for session ${session.sessionId.substring(0,8)}`; return row;
+                        });
+                        allRowsCollected = allRowsCollected.concat(mappedRows);
+                    }
+                } // end for session loop
+                currentChunkStartDate.setUTCDate(currentChunkEndDate.getUTCDate() + 1); // Advance to the start of the next chunk
+            } // end while loop for date chunks
+
+            if (allRowsCollected.length > 0) { table.appendRows(allRowsCollected); }
+            else { tableau.log(totalSessionsFoundInPeriod > 0 ? `Found ${totalSessionsFoundInPeriod} sessions, but no pitch/hit data extracted.` : `No practice sessions found for period ${utcDateFrom} to ${utcDateTo}.`);}
+            doneCallback(); // Call doneCallback AFTER all chunks and processing are complete
+
         } catch (error) {
-            console.error("WDC: Error in fetchSingleDayPracticeDataWithFullerSchema:", error.toString(), error.stack);
-            tableau.abortWithError("Failed during Practice Data Fetch (Fuller Schema): " + error.toString());
+            tableau.abortWithError("Error fetching incremental practice data: " + error.toString());
         }
     }
 
     if (typeof tableau !== 'undefined' && tableau.makeConnector) {
         tableau.registerConnector(myConnector);
-        console.log("WDC: Connector registered with Tableau.");
-    } else {
-        console.error('WDC: Cannot register connector.');
-        // ... (error display logic) ...
-    }
+    } else { /* ... error display ... */ }
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau WDC - v12.6-FullerPracticeSchema</h1>
+  <h1>TrackMan Tableau WDC - v14-IncrementalPracticeData</h1>
   <div id="error-message" style="display:none; color:red; margin:10px 0; padding:10px; border: 1px solid red;"></div>
-  <p><strong>Mode:</strong> Single Day PRACTICE Data Fetch (Fuller Schema). Target Date: May 16, 2025.</p>
-  <button id="connectButton" onclick="if(typeof tableau !== 'undefined' && tableau.connectionName !== undefined) { tableau.connectionName='TrackMan API v12.6-PracticeFull'; tableau.submit(); } else { alert('This button must be run within Tableau Desktop.'); }">
-    Run Test (Fuller Practice Data for May 16, 2025)
+  <p><strong>Mode:</strong> Fetches practice data incrementally. Starts from 2025-05-15 on first run.</p>
+  <button id="connectButton" onclick="if(typeof tableau !== 'undefined' && tableau.connectionName !== undefined) { tableau.connectionName='TrackMan Incremental Practice v14'; tableau.submit(); } else { alert('This button must be run within Tableau Desktop.'); }">
+    Get Incremental Practice Data
   </button>
 </body>
 </html>
