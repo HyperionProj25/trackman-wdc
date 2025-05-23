@@ -1,309 +1,101 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector v10</title>
-  <!-- Tableau WDC library -->
-  <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
-  <script>
-    // Wait for Tableau WDC library to load
-    if (typeof tableau === 'undefined') {
-      console.error('Tableau WDC library not loaded');
-      document.addEventListener('DOMContentLoaded', function() {
-        document.getElementById('error-message').style.display = 'block';
-      });
-    }
+// In your index.html, replace the existing getOAuthToken function with this:
+function getOAuthToken() {
+    // Removed the check for existing tableau.password to force a new fetch every time.
+    console.log("WDC: Fetching new OAuth token (forced for every call to getOAuthToken).");
 
-    // ======= CONFIGURATION: Your TrackMan API credentials =======
-    const clientId     = 'SheldonMcClelland-baseline';
-    const clientSecret = '889de571-86db-4c56-a640-e88cd4565526';
-    const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
-    const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
-    
-    // Netlify proxy URL - Updated with your actual site
-    const proxyUrl = 'https://tmapi.netlify.app/.netlify/functions/trackman-proxy?url=';
-    
-    // Set to false to use real API data via Netlify proxy
-    const useTestData = false;
+    // IMPORTANT: The token request itself MUST also go through the proxy.
+    const proxiedTokenUrl = config.proxyUrl + encodeURIComponent(config.oauthUrl);
+    const body = `grant_type=client_credentials&client_id=${config.clientId}&client_secret=${config.clientSecret}`;
 
-    // Tell Tableau we're doing custom OAuth
-    tableau.authType = tableau.authTypeEnum.custom;
+    console.log("WDC: Requesting token from proxied URL:", proxiedTokenUrl);
 
-    // ======= INTERNAL STATE =======
-    let oauthToken = null;
-    let tokenExpiry = 0;  // timestamp (ms) when token needs renewal
-
-    /** Obtain OAuth2 token (client_credentials grant) **/
-    async function fetchToken() {
-      const params = new URLSearchParams();
-      params.append('client_id', clientId);
-      params.append('client_secret', clientSecret);
-      params.append('grant_type', 'client_credentials');
-
-      const resp = await fetch(proxyUrl + encodeURIComponent(oauthUrl), {
+    return fetch(proxiedTokenUrl, { // Use the proxied URL
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params
-      });
-      if (!resp.ok) throw new Error('Token request failed: ' + resp.statusText);
-
-      const data = await resp.json();
-      oauthToken = data.access_token;
-      // expire a minute early to account for clock skew
-      tokenExpiry = Date.now() + (data.expires_in * 1000) - 60000;
-    }
-
-    /** Ensure we have a valid token before calling any endpoint **/
-    async function ensureToken() {
-      if (!oauthToken || Date.now() >= tokenExpiry) {
-        await fetchToken();
-      }
-    }
-
-    // Create the Tableau connector
-    const myConnector = tableau.makeConnector();
-
-    // Optional init callback
-    myConnector.init = initCallback => {
-      initCallback();
-    };
-
-    /** Define the schema: all fields your Tableau metrics rely on **/
-    myConnector.getSchema = schemaCallback => {
-      const cols = [
-        { id: 'sessionId',      dataType: tableau.dataTypeEnum.string },
-        { id: 'playId',         dataType: tableau.dataTypeEnum.string },
-        { id: 'trackId',        dataType: tableau.dataTypeEnum.string },
-        { id: 'trackStartTime', dataType: tableau.dataTypeEnum.datetime },
-        { id: 'kind',           dataType: tableau.dataTypeEnum.string },
-        { id: 'relSpeed',       dataType: tableau.dataTypeEnum.float },
-        { id: 'spinRate',       dataType: tableau.dataTypeEnum.float },
-        { id: 'extension',      dataType: tableau.dataTypeEnum.float },
-        { id: 'vertRelAngle',   dataType: tableau.dataTypeEnum.float },
-        { id: 'horzRelAngle',   dataType: tableau.dataTypeEnum.float },
-        { id: 'relHeight',      dataType: tableau.dataTypeEnum.float },
-        { id: 'relSide',        dataType: tableau.dataTypeEnum.float },
-        { id: 'horzBreak',      dataType: tableau.dataTypeEnum.float },
-        { id: 'vertBreak',      dataType: tableau.dataTypeEnum.float },
-        { id: 'inducedVertBreak', dataType: tableau.dataTypeEnum.float },
-        { id: 'spinAxis',       dataType: tableau.dataTypeEnum.float },
-        { id: 'tilt',           dataType: tableau.dataTypeEnum.string },
-        { id: 'zoneTime',       dataType: tableau.dataTypeEnum.float },
-        { id: 'plateLocHeight', dataType: tableau.dataTypeEnum.float },
-        { id: 'plateLocSide',   dataType: tableau.dataTypeEnum.float },
-        { id: 'zoneSpeed',      dataType: tableau.dataTypeEnum.float },
-        { id: 'vertApprAngle',  dataType: tableau.dataTypeEnum.float },
-        { id: 'horzApprAngle',  dataType: tableau.dataTypeEnum.float },
-        { id: 'pfxx',           dataType: tableau.dataTypeEnum.float },
-        { id: 'pfxz',           dataType: tableau.dataTypeEnum.float },
-        { id: 'effVelocity',    dataType: tableau.dataTypeEnum.float },
-        { id: 'pitchNo',        dataType: tableau.dataTypeEnum.int },
-        { id: 'inning',         dataType: tableau.dataTypeEnum.int },
-        { id: 'balls',          dataType: tableau.dataTypeEnum.int },
-        { id: 'strikes',        dataType: tableau.dataTypeEnum.int },
-        { id: 'outs',           dataType: tableau.dataTypeEnum.int },
-        { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
-        { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
-      ];
-      schemaCallback([{ id: 'TrackManBalls_v10', columns: cols }]);
-    };
-
-    /** Fetch & parse data: try real API via Netlify proxy, fallback to test data **/
-    myConnector.getData = async (table, doneCallback) => {
-      try {
-        if (useTestData) {
-          // Provide sample data that matches your schema for testing
-          const testRows = [
-            {
-              sessionId: 'test-session-001',
-              playId: 'play-001',
-              trackId: 'track-001',
-              trackStartTime: '2025-01-15T14:30:00Z',
-              kind: 'Pitch',
-              relSpeed: 92.5,
-              spinRate: 2400,
-              extension: 6.2,
-              vertRelAngle: 12.5,
-              horzRelAngle: -1.2,
-              relHeight: 6.1,
-              relSide: 2.1,
-              horzBreak: 8.5,
-              vertBreak: 16.2,
-              inducedVertBreak: 14.8,
-              spinAxis: 225,
-              tilt: '7:30',
-              zoneTime: 0.42,
-              plateLocHeight: 2.8,
-              plateLocSide: 0.3,
-              zoneSpeed: 85.2,
-              vertApprAngle: -6.2,
-              horzApprAngle: 0.8,
-              pfxx: 0.85,
-              pfxz: 1.12,
-              effVelocity: 87.3,
-              pitchNo: 1,
-              inning: 1,
-              balls: 0,
-              strikes: 0,
-              outs: 0,
-              taggedPitchType: 'Fastball',
-              pitchCall: 'Strike'
-            },
-            {
-              sessionId: 'test-session-001',
-              playId: 'play-002',
-              trackId: 'track-002',
-              trackStartTime: '2025-01-15T14:31:00Z',
-              kind: 'Pitch',
-              relSpeed: 78.3,
-              spinRate: 2850,
-              extension: 6.0,
-              vertRelAngle: 8.2,
-              horzRelAngle: -2.1,
-              relHeight: 5.9,
-              relSide: 1.8,
-              horzBreak: 12.8,
-              vertBreak: 4.2,
-              inducedVertBreak: 2.1,
-              spinAxis: 45,
-              tilt: '1:30',
-              zoneTime: 0.51,
-              plateLocHeight: 1.9,
-              plateLocSide: -0.8,
-              zoneSpeed: 72.1,
-              vertApprAngle: -8.5,
-              horzApprAngle: -1.2,
-              pfxx: -0.95,
-              pfxz: 0.32,
-              effVelocity: 74.8,
-              pitchNo: 2,
-              inning: 1,
-              balls: 1,
-              strikes: 0,
-              outs: 0,
-              taggedPitchType: 'Slider',
-              pitchCall: 'Ball'
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json'
+        },
+        body: body
+    })
+    .then(response => {
+        console.log("WDC: getOAuthToken response status:", response.status);
+        if (!response.ok) {
+            return response.text().then(text => {
+                console.error("WDC: getOAuthToken error response body (from proxy):", text);
+                // Try to parse the text in case the proxy returned a JSON error object from the actual token endpoint
+                try {
+                    const errorData = JSON.parse(text);
+                    if (errorData.error && errorData.error.error) { // Check if it's a nested error from proxy then target
+                         throw new Error(`Token request failed: ${response.status} - ${errorData.error.error} - ${errorData.error.error_description || ''}`);
+                    } else if (errorData.error) {
+                         throw new Error(`Token request failed: ${response.status} - ${errorData.error} - ${errorData.error_description || ''}`);
+                    }
+                } catch (e) {
+                    // Not JSON or not the expected error structure
+                }
+                throw new Error(`Token request failed: ${response.status} ${response.statusText} - Raw Text: ${text.substring(0,300)}`);
+            });
+        }
+        return response.json();
+    })
+    .then(data => {
+        // The proxy wraps the actual response. So data here is what the proxy returned.
+        // We need to check if data.body is the actual token response.
+        let tokenData = data;
+        // If the proxy structure returns the target's body inside a 'body' field (and it's a string needing parsing)
+        if (typeof data.body === 'string') {
+            try {
+                tokenData = JSON.parse(data.body);
+            } catch (e) {
+                console.error("WDC: Failed to parse token data from proxy's response body:", data.body);
+                throw new Error("Failed to parse token data from proxy response.");
             }
-          ];
-          
-          console.log('Using test data - ', testRows.length, 'rows');
-          table.appendRows(testRows);
-          doneCallback();
-          return;
+        } else if (data.body) { // If data.body is already an object
+            tokenData = data.body;
         }
+        // If there's no 'body' field, assume 'data' is the direct response (less likely with current proxy but good to check)
 
-        // Use Netlify proxy to fetch real TrackMan data
-        await ensureToken();
 
-        // 1) Discover sessions via proxy
-        const discUrl = encodeURIComponent(`${apiBase}/discovery/game/sessions`);
-        const discResp = await fetch(proxyUrl + discUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json-patch+json',
-            'Accept': 'text/plain',
-            'Authorization': 'Bearer ' + oauthToken
-          },
-          body: JSON.stringify({
-            sessionType: 'All',
-            utcDateFrom: '2025-01-01T00:00:00Z',
-            utcDateTo: '2025-12-31T23:59:59Z'
-          })
-        });
-        
-        if (!discResp.ok) {
-          throw new Error(`Discovery failed (${discResp.status}): ${await discResp.text()}`);
+        if (tokenData.error) {
+            console.error("WDC: OAuth Error (from token endpoint):", tokenData.error, tokenData.error_description);
+            throw new Error(tokenData.error_description || tokenData.error);
         }
-        
-        const sessions = await discResp.json();
-        if (!sessions.length) {
-          tableau.abortWithError('No sessions found for the given date range.');
-          return;
+        if (!tokenData.access_token) {
+            console.error("WDC: access_token not found in OAuth response:", tokenData);
+            throw new Error("Access token not found in OAuth response.");
         }
-
-        // 2) For each session, pull ball data via proxy
-        for (const sess of sessions.slice(0, 2)) { // Limit to first 2 sessions
-          const ballsUrl = encodeURIComponent(`${apiBase}/data/game/balls/${sess.sessionId}`);
-          const ballsResp = await fetch(proxyUrl + ballsUrl, {
-            method: 'GET',
-            headers: {
-              'Accept': 'application/json',
-              'Authorization': 'Bearer ' + oauthToken
-            }
-          });
-          
-          if (!ballsResp.ok) {
-            console.warn(`Balls fetch failed for session ${sess.sessionId}: ${ballsResp.status}`);
-            continue;
-          }
-          
-          const balls = await ballsResp.json();
-
-          // 3) Map JSON to Tableau rows
-          const rows = balls.map(item => ({
-            sessionId: sess.sessionId,
-            playId: item.playId,
-            trackId: item.trackId,
-            trackStartTime: item.trackStartTime,
-            kind: item.kind,
-            relSpeed: item.pitch?.release?.relSpeed,
-            spinRate: item.pitch?.release?.spinRate,
-            extension: item.pitch?.release?.extension,
-            vertRelAngle: item.pitch?.release?.vertRelAngle,
-            horzRelAngle: item.pitch?.release?.horzRelAngle,
-            relHeight: item.pitch?.release?.relHeight,
-            relSide: item.pitch?.release?.relSide,
-            horzBreak: item.pitch?.movement?.horzBreak,
-            vertBreak: item.pitch?.movement?.vertBreak,
-            inducedVertBreak: item.pitch?.movement?.inducedVertBreak,
-            spinAxis: item.pitch?.movement?.spinAxis,
-            tilt: item.pitch?.movement?.tilt,
-            zoneTime: item.pitch?.location?.zoneTime,
-            plateLocHeight: item.pitch?.location?.plateLocHeight,
-            plateLocSide: item.pitch?.location?.plateLocSide,
-            zoneSpeed: item.pitch?.location?.zoneSpeed,
-            vertApprAngle: item.pitch?.location?.vertApprAngle,
-            horzApprAngle: item.pitch?.location?.horzApprAngle,
-            pfxx: item.pitch?.pfxData?.pfxx,
-            pfxz: item.pitch?.pfxData?.pfxz,
-            effVelocity: item.pitch?.pfxData?.effVelocity,
-            pitchNo: item.taggerPitch?.pitchNo,
-            inning: item.gameState?.inning,
-            balls: item.gameState?.balls,
-            strikes: item.gameState?.strikes,
-            outs: item.gameState?.outs,
-            taggedPitchType: item.pitchTag?.taggedPitchType,
-            pitchCall: item.pitchTag?.pitchCall
-          }));
-          
-          table.appendRows(rows);
+        console.log("WDC: New OAuth token fetched successfully via proxy.");
+        if(tokenData.exp) {
+            console.log("WDC: Token 'exp' claim: " + new Date(tokenData.exp * 1000));
+        } else if (tokenData.expires_in) {
+            const expiryDate = new Date(Date.now() + tokenData.expires_in * 1000);
+            console.log("WDC: Token 'expires_in': " + tokenData.expires_in + "s. Approx expiry: " + expiryDate);
         }
+        return tokenData.access_token;
+    })
+    .catch(error => {
+        console.error("WDC: Error in getOAuthToken:", error.toString());
+        return Promise.reject("Failed to fetch OAuth token: " + error.toString());
+    });
+}
 
-        doneCallback();
-      } catch (err) {
-        console.error('API Error:', err);
-        tableau.abortWithError('Connection failed: ' + err.toString() + '. Check browser console for details.');
-      }
-    };
+// And in myConnector.getData, ensure it calls this new getOAuthToken:
+myConnector.getData = function(table, doneCallback) {
+    console.log("WDC: myConnector.getData called for table:", table.tableInfo.id);
 
-    // Register the connector only after ensuring tableau is available
-    if (typeof tableau !== 'undefined') {
-      tableau.registerConnector(myConnector);
-    } else {
-      console.error('Cannot register connector: tableau object not available');
-    }
-  </script>
-</head>
-<body>
-  <h1>TrackMan Tableau Web Data Connector v10</h1>
-  <div id="error-message" style="display:none; color:red; margin:10px 0;">
-    <strong>Error:</strong> This connector must be opened within Tableau Desktop's Web Data Connector interface.
-    <br>Go to Tableau Desktop → Connect → To a Server → Web Data Connector → Enter this page's URL
-  </div>
-  <p><strong>Live API Version:</strong> Uses Netlify serverless function to bypass CORS restrictions.</p>
-  <p><strong>Ready to use:</strong> Connected to tmapi.netlify.app proxy.</p>
-  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v10'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
-    Connect to TrackMan API v10 (Live Data)
-  </button>
-</body>
-</html>
+    getOAuthToken().then(freshToken => {
+        tableau.password = freshToken; // Store the fresh token
+        console.log("WDC: Fresh token obtained and stored in tableau.password for getData call.");
+
+        if (table.tableInfo.id === config.schemaIdGameSessions) {
+            fetchGameSessions(table, doneCallback); // fetchGameSessions will use the new tableau.password
+        } else if (table.tableInfo.id === config.schemaIdPitchData) {
+            fetchPitchData(table, doneCallback); // fetchPitchData will use the new tableau.password
+        } else {
+            tableau.abortWithError("WDC: Unknown table ID in getData: " + table.tableInfo.id);
+        }
+    }).catch(err => {
+        console.error("WDC: Failed to get fresh token for getData:", err);
+        tableau.abortWithError("WDC: Failed to get fresh token for getData: " + err.toString());
+    });
+};
