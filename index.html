@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>TrackMan Tableau Web Data Connector v7</title>
+  <title>TrackMan Tableau Web Data Connector v8</title>
   <!-- Tableau WDC library -->
   <script src="https://connectors.tableau.com/libs/tableauwdc-2.3.latest.js"></script>
   <script>
@@ -19,8 +19,8 @@
     const oauthUrl     = 'https://login.trackmanbaseball.com/connect/token';
     const apiBase      = 'https://release-dataapi.trackmanbaseball.com/api/v1';
     
-    // CORS proxy to bypass browser restrictions
-    const proxyUrl = 'https://api.allorigins.win/raw?url=';
+    // CORS proxy - try a different one that handles POST better
+    const proxyUrl = 'https://thingproxy.freeboard.io/fetch/';
 
     // Tell Tableau we're doing custom OAuth
     tableau.authType = tableau.authTypeEnum.custom;
@@ -36,7 +36,7 @@
       params.append('client_secret', clientSecret);
       params.append('grant_type', 'client_credentials');
 
-      const resp = await fetch(proxyUrl + encodeURIComponent(oauthUrl), {
+      const resp = await fetch(proxyUrl + oauthUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: params
@@ -101,7 +101,7 @@
         { id: 'taggedPitchType',dataType: tableau.dataTypeEnum.string },
         { id: 'pitchCall',      dataType: tableau.dataTypeEnum.string }
       ];
-      schemaCallback([{ id: 'TrackManBalls_v7', columns: cols }]);
+      schemaCallback([{ id: 'TrackManBalls_v8', columns: cols }]);
     };
 
     /** Fetch & parse data: discover sessions → get balls for each session **/
@@ -109,8 +109,10 @@
       try {
         await ensureToken();
 
-        // 1) Discover sessions (using proxy to bypass CORS)
-        const discUrl = encodeURIComponent(`${apiBase}/discovery/game/sessions`);
+        // 1) Discover sessions (using different proxy)
+        const discUrl = `${apiBase}/discovery/game/sessions`;
+        console.log('Fetching sessions from:', proxyUrl + discUrl);
+        
         const discResp = await fetch(proxyUrl + discUrl, {
           method:  'POST',
           headers: {
@@ -134,8 +136,10 @@
         }
 
         // 2) For each session, pull ball data (using proxy)
-        for (const sess of sessions) {
-          const ballsUrl = encodeURIComponent(`${apiBase}/data/game/balls/${sess.sessionId}`);
+        for (const sess of sessions.slice(0, 1)) { // Limit to first session for testing
+          const ballsUrl = `${apiBase}/data/game/balls/${sess.sessionId}`;
+          console.log('Fetching balls from:', proxyUrl + ballsUrl);
+          
           const ballsResp = await fetch(proxyUrl + ballsUrl, {
             method:  'GET',
             headers: {
@@ -202,14 +206,14 @@
   </script>
 </head>
 <body>
-  <h1>TrackMan Tableau Web Data Connector v7</h1>
+  <h1>TrackMan Tableau Web Data Connector v8</h1>
   <div id="error-message" style="display:none; color:red; margin:10px 0;">
     <strong>Error:</strong> This connector must be opened within Tableau Desktop's Web Data Connector interface.
     <br>Go to Tableau Desktop → Connect → To a Server → Web Data Connector → Enter this page's URL
   </div>
-  <p>Click below to authenticate and pull your TrackMan data via CORS proxy.</p>
-  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v7'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
-    Connect to TrackMan API v7
+  <p>Click below to authenticate and pull your TrackMan data via CORS proxy (v8 - ThingProxy).</p>
+  <button onclick="if(typeof tableau !== 'undefined') { tableau.connectionName='TrackMan API v8'; tableau.submit(); } else { alert('This must be run within Tableau Desktop Web Data Connector'); }">
+    Connect to TrackMan API v8
   </button>
 </body>
 </html>
